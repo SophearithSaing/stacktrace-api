@@ -1,2 +1,9 @@
 .env
+.env.*
+!.env.example
 docs/
+
+/bin/
+/coverage.out
+/coverage.html
+*.test

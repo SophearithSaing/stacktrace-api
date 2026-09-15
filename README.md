@@ -1,0 +1,71 @@
+# Stacktrace API
+
+## Prerequisites
+
+- Go 1.26.5
+- Docker with Compose v2+ and a running daemon
+- OpenSSL
+
+## Local setup
+
+Run from the repository root:
+
+```sh
+cp .env.example .env
+```
+
+Set `POSTGRES_PASSWORD` in `.env` to the output of `openssl rand -hex 24`.
+Keep the same password when reusing the database volume. Then run:
+
+```sh
+set -a
+. ./.env
+set +a
+export DATABASE_URL="postgres://stacktrace:${POSTGRES_PASSWORD}@localhost:${POSTGRES_PORT}/stacktrace?sslmode=disable"
+
+docker compose up -d --wait postgres
+go mod download
+go run ./cmd/db ping
+go run ./cmd/server
+```
+
+Load `.env` and export `DATABASE_URL` in each new shell; Go commands do not load
+`.env` automatically. Local API: `http://localhost:8080`; client: `http://localhost:5173`.
+
+In another terminal:
+
+```sh
+curl -i http://localhost:8080/healthz
+curl -i http://localhost:8080/readyz
+```
+
+Stop the server with Ctrl-C and PostgreSQL with `docker compose down`.
+Use `docker compose down -v` only to delete the local database.
+
+## Package layout
+
+```text
+cmd/server        HTTP server
+cmd/db            Database CLI (currently ping)
+internal/config   Environment configuration
+internal/api      HTTP routes and JSON
+internal/app      Domain types and rules
+internal/postgres PostgreSQL persistence
+```
+
+## Build and test
+
+```sh
+go build ./...
+go test ./...
+go test -race ./...
+go vet ./...
+```
+
+PostgreSQL integration test (after loading the environment above):
+
+```sh
+TEST_DATABASE_URL="$DATABASE_URL" go test ./internal/postgres -count=1
+```
+
+Skipped unless `TEST_DATABASE_URL` is set.

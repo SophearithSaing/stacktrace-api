@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/SophearithSaing/stacktrace-api/internal/config"
 	"github.com/SophearithSaing/stacktrace-api/internal/postgres"
@@ -23,20 +22,25 @@ func main() {
 }
 
 func run(ctx context.Context, args []string) error {
-	if len(args) != 1 || args[0] != "ping" {
-		return errors.New("usage: db ping")
+	if len(args) != 1 || (args[0] != "ping" && args[0] != "migrate") {
+		return errors.New("usage: db <ping|migrate>")
 	}
 	cfg, err := config.Load(config.Database)
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
 	store, err := postgres.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
+	if args[0] == "migrate" {
+		if err := store.Migrate(ctx); err != nil {
+			return err
+		}
+		fmt.Fprintln(os.Stdout, "Database migrations applied")
+		return nil
+	}
 	fmt.Fprintln(os.Stdout, "PostgreSQL connection OK")
 	return nil
 }

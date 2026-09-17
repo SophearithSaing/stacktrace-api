@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"errors"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,58 +15,36 @@ import (
 )
 
 func main() {
+	cfg, err := config.Load(config.Server)
+	if err != nil {
+		slog.Error("invalid server configuration", "error", err)
+		os.Exit(1)
+	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, logger); err != nil {
+	if err := run(ctx, cfg, logger); err != nil {
 		logger.Error("server stopped", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, logger *slog.Logger) error {
-	cfg, err := config.Load(config.Server)
-	if err != nil {
-		return err
-	}
-	connectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	store, err := postgres.Open(connectCtx, cfg.DatabaseURL)
-	cancel()
+func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
+	store, err := postgres.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
 
-	listener, err := net.Listen("tcp", cfg.HTTPAddr)
-	if err != nil {
-		return errors.New("could not listen on HTTP_ADDR")
-	}
 	server := &http.Server{
-		Handler:           api.NewHandler(store.Ping),
+		Addr:              cfg.HTTPAddr,
+		Handler:           api.NewHandler(store.Ready, logger),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		IdleTimeout:       time.Minute,
 		MaxHeaderBytes:    16 << 10,
 	}
-	serveErr := make(chan error, 1)
-	go func() { serveErr <- server.Serve(listener) }()
-	logger.Info("server listening", "address", cfg.HTTPAddr, "api_origin", cfg.APIPublicOrigin)
-
-	select {
-	case err := <-serveErr:
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
-		}
-		return errors.New("HTTP server failed")
-	case <-ctx.Done():
-		logger.Info("server shutting down")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			server.Close()
-			return errors.New("HTTP shutdown deadline exceeded")
-		}
-		return nil
-	}
+	logger.Info("starting HTTP server", "address", cfg.HTTPAddr, "api_origin", cfg.APIPublicOrigin)
+	return serve(ctx, server, 10*time.Second, logger)
 }

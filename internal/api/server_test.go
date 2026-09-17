@@ -5,12 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
+
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewJSONHandler(io.Discard, nil))
+}
 
 func TestInfrastructureRoutes(t *testing.T) {
 	for _, tt := range []struct {
@@ -40,7 +45,7 @@ func TestInfrastructureRoutes(t *testing.T) {
 					t.Error("readiness query is not deadline bounded")
 				}
 				return tt.databaseError
-			})
+			}, testLogger())
 			w := httptest.NewRecorder()
 			r := httptest.NewRequest(tt.method, tt.path, nil)
 			r.Header.Set("X-Request-ID", "untrusted-client-value")
@@ -48,7 +53,7 @@ func TestInfrastructureRoutes(t *testing.T) {
 			if w.Code != tt.wantStatus || called != tt.wantPing {
 				t.Fatalf("status=%d ping=%v; want status=%d ping=%v", w.Code, called, tt.wantStatus, tt.wantPing)
 			}
-			if w.Header().Get("Content-Type") != "application/json" || w.Header().Get("Cache-Control") != "private, no-store" {
+			if w.Header().Get("Content-Type") != "application/json" || w.Header().Get("Cache-Control") != "no-store" {
 				t.Fatal("missing JSON or cache headers")
 			}
 			requestID := w.Header().Get("X-Request-ID")
@@ -74,15 +79,13 @@ func TestInfrastructureRoutes(t *testing.T) {
 	}
 }
 
-func TestReadinessPropagatesCancellation(t *testing.T) {
+func TestCancelledRequestDoesNotStartReadinessQuery(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	handler := NewHandler(func(ctx context.Context) error {
-		if !errors.Is(ctx.Err(), context.Canceled) {
-			t.Error("request cancellation was not propagated")
-		}
-		return ctx.Err()
-	})
+		t.Error("cancelled request started a database query")
+		return nil
+	}, testLogger())
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, httptest.NewRequest("GET", "/readyz", nil).WithContext(ctx))
 	if w.Code != http.StatusServiceUnavailable {
@@ -91,7 +94,7 @@ func TestReadinessPropagatesCancellation(t *testing.T) {
 }
 
 func TestHeadHasNoResponseBody(t *testing.T) {
-	server := httptest.NewServer(NewHandler(func(context.Context) error { return nil }))
+	server := httptest.NewServer(NewHandler(func(context.Context) error { return nil }, testLogger()))
 	defer server.Close()
 	resp, err := server.Client().Head(server.URL + "/healthz")
 	if err != nil {

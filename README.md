@@ -26,6 +26,7 @@ export DATABASE_URL="postgres://stacktrace:${POSTGRES_PASSWORD}@localhost:${POST
 docker compose up -d --wait postgres
 go mod download
 go run ./cmd/db ping
+go run ./cmd/db migrate
 go run ./cmd/server
 ```
 
@@ -46,11 +47,12 @@ Use `docker compose down -v` only to delete the local database.
 
 ```text
 cmd/server        HTTP server
-cmd/db            Database CLI (currently ping)
+cmd/db            Database CLI (ping, migrate)
 internal/config   Environment configuration
 internal/api      HTTP routes and JSON
 internal/app      Domain types and rules
 internal/postgres PostgreSQL persistence
+migrations        Embedded, ordered SQL migrations
 ```
 
 ## Build and test
@@ -62,10 +64,10 @@ go test -race ./...
 go vet ./...
 ```
 
-PostgreSQL integration test (after loading the environment above):
+PostgreSQL integration tests (create/drop isolated schemas; require schema-creation permission):
 
 ```sh
-TEST_DATABASE_URL="$DATABASE_URL" go test ./internal/postgres -count=1
+TEST_DATABASE_URL="$DATABASE_URL" go test -race ./internal/postgres -count=1
 ```
 
 Skipped unless `TEST_DATABASE_URL` is set.

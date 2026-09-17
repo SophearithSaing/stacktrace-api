@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -35,65 +36,70 @@ func load(role Role, getenv func(string) string) (Config, error) {
 	if role != Server && role != Database {
 		return Config{}, errors.New("unsupported configuration role")
 	}
-	c := Config{
+	cfg := Config{
 		Environment: getenv("APP_ENV"),
 		DatabaseURL: getenv("DATABASE_URL"),
 	}
-	if c.Environment == "" {
-		c.Environment = "production"
+	if cfg.Environment == "" {
+		cfg.Environment = "production"
 	}
-	if c.Environment != "development" && c.Environment != "production" {
+	if cfg.Environment != "development" && cfg.Environment != "production" {
 		return Config{}, errors.New("APP_ENV must be development or production")
 	}
-	u, err := url.Parse(c.DatabaseURL)
-	if err != nil || u == nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") || u.Hostname() == "" || u.Fragment != "" {
+	databaseURL, err := url.Parse(cfg.DatabaseURL)
+	if err != nil || (databaseURL.Scheme != "postgres" && databaseURL.Scheme != "postgresql") || databaseURL.Hostname() == "" || databaseURL.Fragment != "" {
 		// URL parsing errors can contain credentials; never return them.
 		return Config{}, errors.New("DATABASE_URL must be a PostgreSQL connection URL with a host")
 	}
 	if role == Database {
-		return c, nil
+		return cfg, nil
 	}
 
-	c.HTTPAddr = getenv("HTTP_ADDR")
-	if c.HTTPAddr == "" {
-		c.HTTPAddr = ":8080"
-		if c.Environment == "development" {
-			c.HTTPAddr = "127.0.0.1:8080"
+	cfg.HTTPAddr = getenv("HTTP_ADDR")
+	if cfg.HTTPAddr == "" {
+		cfg.HTTPAddr = ":8080"
+		if cfg.Environment == "development" {
+			cfg.HTTPAddr = "127.0.0.1:8080"
 		}
 	}
-	_, port, err := net.SplitHostPort(c.HTTPAddr)
-	p, portErr := strconv.Atoi(port)
-	if err != nil || portErr != nil || p < 1 || p > 65535 {
+	_, port, err := net.SplitHostPort(cfg.HTTPAddr)
+	portNumber, portErr := strconv.Atoi(port)
+	if err != nil || portErr != nil || portNumber < 1 || portNumber > 65535 {
 		return Config{}, errors.New("HTTP_ADDR must be a host:port address with a port from 1 to 65535")
 	}
-	c.APIPublicOrigin = getenv("API_PUBLIC_ORIGIN")
-	if !validOrigin(c.APIPublicOrigin, c.Environment) {
+	cfg.APIPublicOrigin = getenv("API_PUBLIC_ORIGIN")
+	if !validOrigin(cfg.APIPublicOrigin, cfg.Environment) {
 		return Config{}, errors.New("API_PUBLIC_ORIGIN must be an exact HTTPS origin (loopback HTTP is allowed in development)")
 	}
-	seen := make(map[string]bool)
 	for raw := range strings.SplitSeq(getenv("CLIENT_ORIGINS"), ",") {
 		origin := strings.TrimSpace(raw)
-		if !validOrigin(origin, c.Environment) {
+		if !validOrigin(origin, cfg.Environment) {
 			return Config{}, errors.New("CLIENT_ORIGINS must be a comma-separated list of exact HTTPS origins (loopback HTTP is allowed in development)")
 		}
-		if !seen[origin] {
-			c.ClientOrigins = append(c.ClientOrigins, origin)
-			seen[origin] = true
+		if !slices.Contains(cfg.ClientOrigins, origin) {
+			cfg.ClientOrigins = append(cfg.ClientOrigins, origin)
 		}
 	}
-	return c, nil
+	return cfg, nil
 }
 
 func validOrigin(raw, environment string) bool {
 	origin, err := url.Parse(raw)
-	if err != nil || origin == nil || origin.Hostname() == "" || origin.User != nil || origin.Opaque != "" ||
-		origin.Path != "" || origin.RawQuery != "" || origin.ForceQuery || origin.Fragment != "" ||
-		strings.ContainsAny(raw, "*#\\") || strings.HasSuffix(origin.Host, ":") {
+	if err != nil {
+		return false
+	}
+	if origin.Hostname() == "" || origin.User != nil || origin.Opaque != "" {
+		return false
+	}
+	if origin.Path != "" || origin.RawQuery != "" || origin.ForceQuery || origin.Fragment != "" {
+		return false
+	}
+	if strings.ContainsAny(raw, "*#\\") || strings.HasSuffix(origin.Host, ":") {
 		return false
 	}
 	if port := origin.Port(); port != "" {
-		p, err := strconv.Atoi(port)
-		if err != nil || p < 1 || p > 65535 {
+		portNumber, err := strconv.Atoi(port)
+		if err != nil || portNumber < 1 || portNumber > 65535 {
 			return false
 		}
 	}

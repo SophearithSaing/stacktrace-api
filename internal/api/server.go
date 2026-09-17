@@ -6,25 +6,59 @@ import (
 	"log/slog"
 	"net/http"
 	"path"
+	"strings"
 	"time"
+
+	"github.com/SophearithSaing/stacktrace-api/internal/app"
 )
 
+type Store interface {
+	app.AuthStore
+	Ready(context.Context) error
+	ProfileByID(context.Context, app.ID, app.ID) (app.AccountProfile, error)
+	ProfileByHandle(context.Context, string, app.ID) (app.AccountProfile, error)
+	SetFollow(context.Context, string, app.ID, bool) (app.AccountProfile, error)
+}
+
 type server struct {
-	mux     *http.ServeMux
-	logger  *slog.Logger
-	limiter *rateLimiter
+	mux                 *http.ServeMux
+	logger              *slog.Logger
+	limiter             *rateLimiter
+	store               Store
+	auth                *app.Auth
+	clientOrigins       []string
+	csrfSigningKey      []byte
+	secureCookies       bool
+	credentialIPLimiter *rateLimiter
+	usernameLimiter     *rateLimiter
+	accountLimiter      *rateLimiter
 }
 
 // NewHandler serves API/infrastructure routes with the shared HTTP controls.
-// ready checks database connectivity and exact migration compatibility.
-func NewHandler(ready func(context.Context) error, logger *slog.Logger) http.Handler {
-	return newServer(ready, logger).handler()
+func NewHandler(store Store, clientOrigins []string, csrfSigningKey []byte, secureCookies bool, logger *slog.Logger) http.Handler {
+	s := newServer(store.Ready, logger)
+	s.store, s.auth = store, app.NewAuth(store)
+	s.clientOrigins = append([]string(nil), clientOrigins...)
+	s.csrfSigningKey = append([]byte(nil), csrfSigningKey...)
+	s.secureCookies = secureCookies
+	s.mux.HandleFunc("POST /api/v1/auth/register", s.register)
+	s.mux.HandleFunc("POST /api/v1/auth/login", s.login)
+	s.mux.HandleFunc("GET /api/v1/me", s.me)
+	s.mux.HandleFunc("POST /api/v1/auth/logout", s.logout)
+	s.mux.HandleFunc("GET /api/v1/accounts/{accountID}", s.accountByID)
+	s.mux.HandleFunc("GET /api/v1/accounts/by-handle/{handle}", s.accountByHandle)
+	s.mux.HandleFunc("PUT /api/v1/accounts/{accountID}/follow", s.follow)
+	s.mux.HandleFunc("DELETE /api/v1/accounts/{accountID}/follow", s.follow)
+	return s.handler()
 }
 
 func newServer(ready func(context.Context) error, logger *slog.Logger) *server {
 	s := &server{
 		mux: http.NewServeMux(), logger: logger,
-		limiter: newRateLimiter(120, time.Minute, 10000),
+		limiter:             newRateLimiter(120, time.Minute, 10000),
+		credentialIPLimiter: newRateLimiter(20, 15*time.Minute, 10000),
+		usernameLimiter:     newRateLimiter(10, 15*time.Minute, 10000),
+		accountLimiter:      newRateLimiter(60, time.Minute, 10000),
 	}
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -40,10 +74,27 @@ func newServer(ready func(context.Context) error, logger *slog.Logger) *server {
 	})
 	s.mux.HandleFunc("/healthz", methodNotAllowed("GET, HEAD"))
 	s.mux.HandleFunc("/readyz", methodNotAllowed("GET, HEAD"))
-	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, http.StatusNotFound, "not_found", "Resource not found")
-	})
+	s.mux.HandleFunc("/", s.notFound)
 	return s
+}
+
+// Let ServeMux resolve allowed methods instead of registering overlapping
+// methodless wildcard patterns (by-handle/{handle} and {id}/follow overlap).
+func (s *server) notFound(w http.ResponseWriter, r *http.Request) {
+	var allowed []string
+	probe := r.Clone(r.Context())
+	for _, method := range []string{"GET", "HEAD", "POST", "PUT", "DELETE"} {
+		probe.Method = method
+		_, pattern := s.mux.Handler(probe)
+		if strings.Contains(pattern, " ") {
+			allowed = append(allowed, method)
+		}
+	}
+	if len(allowed) != 0 {
+		methodNotAllowed(strings.Join(allowed, ", "))(w, r)
+		return
+	}
+	writeError(w, http.StatusNotFound, "not_found", "Resource not found")
 }
 
 func methodNotAllowed(allow string) http.HandlerFunc {

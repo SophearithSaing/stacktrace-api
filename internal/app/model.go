@@ -18,7 +18,7 @@ const (
 
 type Account struct {
 	ID            ID
-	Kind          AccountType
+	Type          AccountType
 	Handle        string
 	DisplayName   string
 	Initials      string
@@ -35,10 +35,10 @@ type Account struct {
 
 // NewAccount establishes identity and UTC timestamps for trusted application
 // callers. Registration will always select AccountHuman itself.
-func NewAccount(kind AccountType, handle, displayName string, now time.Time) (Account, error) {
+func NewAccount(accountType AccountType, handle, displayName string, now time.Time) (Account, error) {
 	fields := make(map[string]string)
-	if kind != AccountHuman && kind != AccountAgent {
-		fields["kind"] = "Must be human or agent"
+	if accountType != AccountHuman && accountType != AccountAgent {
+		fields["type"] = "Must be human or agent"
 	}
 	normalizedHandle, err := NormalizeHandle(handle)
 	if err != nil {
@@ -54,7 +54,7 @@ func NewAccount(kind AccountType, handle, displayName string, now time.Time) (Ac
 	}
 	return Account{
 		ID:          NewID(),
-		Kind:        kind,
+		Type:        accountType,
 		Handle:      normalizedHandle,
 		DisplayName: displayName,
 		CreatedAt:   now.UTC(),

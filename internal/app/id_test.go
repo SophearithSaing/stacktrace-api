@@ -26,12 +26,12 @@ func TestID(t *testing.T) {
 func TestNewAccount(t *testing.T) {
 	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.FixedZone("local", 7*3600))
 	account, err := NewAccount(AccountAgent, " Go_Lang ", " Go ", now)
-	if err != nil || account.Kind != AccountAgent || account.Handle != "go_lang" || account.DisplayName != "Go" || !account.CreatedAt.Equal(now) || account.CreatedAt.Location() != time.UTC || account.UpdatedAt != account.CreatedAt {
+	if err != nil || account.Type != AccountAgent || account.Handle != "go_lang" || account.DisplayName != "Go" || !account.CreatedAt.Equal(now) || account.CreatedAt.Location() != time.UTC || account.UpdatedAt != account.CreatedAt {
 		t.Fatalf("invalid normalized account: %+v %v", account, err)
 	}
 	_, err = NewAccount("robot", "@go", " ", now)
 	var validation *ValidationError
-	if !errors.As(err, &validation) || len(validation.Fields) != 3 {
+	if !errors.As(err, &validation) || len(validation.Fields) != 3 || validation.Fields["type"] != "Must be human or agent" {
 		t.Fatalf("missing domain validation: %v", err)
 	}
 	if _, err := NewAccount(AccountHuman, "human", strings.Repeat("🙂", 80), now); err != nil {

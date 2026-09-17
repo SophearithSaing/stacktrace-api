@@ -38,7 +38,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 
 	server := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewHandler(store.Ready, logger),
+		Handler:           api.NewHandler(store, cfg.ClientOrigins, cfg.CSRFSigningKey, cfg.SecureCookies, logger),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,

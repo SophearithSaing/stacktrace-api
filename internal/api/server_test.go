@@ -38,14 +38,14 @@ func TestInfrastructureRoutes(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			called := false
-			handler := NewHandler(func(ctx context.Context) error {
+			handler := newServer(func(ctx context.Context) error {
 				called = true
 				deadline, ok := ctx.Deadline()
 				if !ok || time.Until(deadline) > 2*time.Second {
 					t.Error("readiness query is not deadline bounded")
 				}
 				return tt.databaseError
-			}, testLogger())
+			}, testLogger()).handler()
 			w := httptest.NewRecorder()
 			r := httptest.NewRequest(tt.method, tt.path, nil)
 			r.Header.Set("X-Request-ID", "untrusted-client-value")
@@ -53,7 +53,7 @@ func TestInfrastructureRoutes(t *testing.T) {
 			if w.Code != tt.wantStatus || called != tt.wantPing {
 				t.Fatalf("status=%d ping=%v; want status=%d ping=%v", w.Code, called, tt.wantStatus, tt.wantPing)
 			}
-			if w.Header().Get("Content-Type") != "application/json" || w.Header().Get("Cache-Control") != "no-store" {
+			if w.Header().Get("Content-Type") != "application/json" || !strings.Contains(w.Header().Get("Cache-Control"), "no-store") {
 				t.Fatal("missing JSON or cache headers")
 			}
 			requestID := w.Header().Get("X-Request-ID")
@@ -82,10 +82,10 @@ func TestInfrastructureRoutes(t *testing.T) {
 func TestCancelledRequestDoesNotStartReadinessQuery(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	handler := NewHandler(func(ctx context.Context) error {
+	handler := newServer(func(ctx context.Context) error {
 		t.Error("cancelled request started a database query")
 		return nil
-	}, testLogger())
+	}, testLogger()).handler()
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, httptest.NewRequest("GET", "/readyz", nil).WithContext(ctx))
 	if w.Code != http.StatusServiceUnavailable {
@@ -94,7 +94,7 @@ func TestCancelledRequestDoesNotStartReadinessQuery(t *testing.T) {
 }
 
 func TestHeadHasNoResponseBody(t *testing.T) {
-	server := httptest.NewServer(NewHandler(func(context.Context) error { return nil }, testLogger()))
+	server := httptest.NewServer(newServer(func(context.Context) error { return nil }, testLogger()).handler())
 	defer server.Close()
 	resp, err := server.Client().Head(server.URL + "/healthz")
 	if err != nil {

@@ -22,8 +22,8 @@ func main() {
 }
 
 func run(ctx context.Context, args []string) error {
-	if len(args) != 1 || (args[0] != "ping" && args[0] != "migrate") {
-		return errors.New("usage: db <ping|migrate>")
+	if len(args) != 1 || (args[0] != "ping" && args[0] != "migrate" && args[0] != "seed") {
+		return errors.New("usage: db <ping|migrate|seed>")
 	}
 	cfg, err := config.Load(config.Database)
 	if err != nil {
@@ -34,6 +34,16 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	defer store.Close()
+	if args[0] == "seed" {
+		if err := store.Ready(ctx); err != nil {
+			return err
+		}
+		if err := store.SeedDemo(ctx); err != nil {
+			return err
+		}
+		fmt.Fprintln(os.Stdout, "Demo identities and relationships seeded")
+		return nil
+	}
 	if args[0] == "migrate" {
 		if err := store.Migrate(ctx); err != nil {
 			return err

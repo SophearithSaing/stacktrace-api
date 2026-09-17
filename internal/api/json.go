@@ -82,6 +82,11 @@ func writeFailure(w http.ResponseWriter, err error) {
 		writeErrorFields(w, http.StatusUnprocessableEntity, "validation_failed", "Validation failed", map[string]string{"handle": app.ErrInvalidHandle.Error()})
 	case errors.Is(err, app.ErrUnauthenticated):
 		writeError(w, http.StatusUnauthorized, "unauthenticated", "Authentication is required")
+	case errors.Is(err, app.ErrInvalidCredentials):
+		writeError(w, http.StatusUnauthorized, "invalid_credentials", "Invalid username or password")
+	case errors.Is(err, app.ErrBusy):
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusServiceUnavailable, "unavailable", "Service is unavailable")
 	case errors.Is(err, app.ErrForbidden):
 		writeError(w, http.StatusForbidden, "forbidden", "Permission denied")
 	case errors.Is(err, app.ErrNotFound):

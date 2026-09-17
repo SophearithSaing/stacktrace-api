@@ -81,6 +81,9 @@ func (s *server) middleware(next http.Handler) http.Handler {
 		}()
 		r.Body = http.MaxBytesReader(recorder, r.Body, maxBodyBytes)
 		defer r.Body.Close()
+		if !s.cors(recorder, r) {
+			return
+		}
 		if r.ContentLength > maxBodyBytes {
 			writeError(recorder, http.StatusRequestEntityTooLarge, "body_too_large", "Request body exceeds the byte limit")
 			return

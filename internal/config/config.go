@@ -2,6 +2,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"errors"
 	"net"
 	"net/url"
@@ -24,6 +25,8 @@ type Config struct {
 	HTTPAddr        string
 	APIPublicOrigin string
 	ClientOrigins   []string
+	CSRFSigningKey  []byte
+	SecureCookies   bool
 }
 
 // Load validates only the settings needed by the requested binary role.
@@ -80,6 +83,13 @@ func load(role Role, getenv func(string) string) (Config, error) {
 			cfg.ClientOrigins = append(cfg.ClientOrigins, origin)
 		}
 	}
+	cfg.CSRFSigningKey, err = hex.DecodeString(getenv("CSRF_SIGNING_KEY"))
+	if err != nil || len(cfg.CSRFSigningKey) != 32 {
+		return Config{}, errors.New("CSRF_SIGNING_KEY must encode 32 random bytes as 64 hexadecimal characters")
+	}
+	// Non-secure cookies are only possible for validated loopback HTTP origins
+	// with explicit development mode. HTTPS always uses the production cookie.
+	cfg.SecureCookies = strings.HasPrefix(cfg.APIPublicOrigin, "https://")
 	return cfg, nil
 }
 

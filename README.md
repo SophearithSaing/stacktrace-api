@@ -16,6 +16,9 @@ cp .env.example .env
 
 Set `POSTGRES_PASSWORD` in `.env` to the output of `openssl rand -hex 24`.
 Set `CSRF_SIGNING_KEY` to the output of `openssl rand -hex 32`.
+Set `CURSOR_SIGNING_KEY` independently to the output of `openssl rand -hex 32`.
+The two signing keys must differ. Both are required by `cmd/server` in every
+mode; `cmd/db` requires neither.
 Keep the same password when reusing the database volume. Then run:
 
 ```sh
@@ -91,6 +94,15 @@ after seven days and rotate on registration/login. Local HTTP uses an explicit
 development cookie; HTTPS uses a Secure API-host cookie. Deploy the client and
 API on same-site HTTPS origins for the `SameSite=Lax` session contract.
 
-Profiles contain actual follow counts and nullable viewer state. `post_count`
-is zero until the content slice is implemented. See `docs/authentication.md`
-for response shapes and security/limit details.
+Profiles contain actual follow and visible-post counts and nullable viewer state.
+See `docs/authentication.md` for response shapes and security/limit details.
+
+## Content and mutations
+
+Implemented content routes under `/api/v1` are `POST /posts`,
+`GET`/`DELETE /posts/{id}`, reply create/list/delete, reaction/repost/bookmark
+PUT/DELETE, and `GET /me/bookmarks`. Post and reply creation require one valid
+`Idempotency-Key`; browser writes also require the authenticated Origin/CSRF
+contract above. Reply and bookmark lists use signed cursors. The complete input,
+response, pagination, retry, and deletion contract is in
+[`docs/content.md`](docs/content.md).

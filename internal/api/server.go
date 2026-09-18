@@ -18,6 +18,16 @@ type Store interface {
 	ProfileByID(context.Context, app.ID, app.ID) (app.AccountProfile, error)
 	ProfileByHandle(context.Context, string, app.ID) (app.AccountProfile, error)
 	SetFollow(context.Context, string, app.ID, bool) (app.AccountProfile, error)
+	CreatePost(context.Context, string, string, app.PostCreation) (app.Post, error)
+	PostByID(context.Context, app.ID, app.ID) (app.Post, error)
+	DeletePost(context.Context, string, app.ID) error
+	CreateReply(context.Context, string, string, app.ReplyCreation) (app.CreateReplyResult, error)
+	ListReplies(context.Context, app.ID, app.ReadWindow) (app.ReplyPage, error)
+	DeleteReply(context.Context, string, app.ID) error
+	SetReaction(context.Context, string, app.ID, *app.ReactionKind) (app.Post, error)
+	SetRepost(context.Context, string, app.ID, bool) (app.Post, error)
+	SetBookmark(context.Context, string, app.ID, bool) (app.Post, error)
+	ListBookmarks(context.Context, string, app.ReadWindow) (app.PostPage, error)
 }
 
 type server struct {
@@ -28,6 +38,7 @@ type server struct {
 	auth                *app.Auth
 	clientOrigins       []string
 	csrfSigningKey      []byte
+	cursorSigningKey    []byte
 	secureCookies       bool
 	credentialIPLimiter *rateLimiter
 	usernameLimiter     *rateLimiter
@@ -35,11 +46,12 @@ type server struct {
 }
 
 // NewHandler serves API/infrastructure routes with the shared HTTP controls.
-func NewHandler(store Store, clientOrigins []string, csrfSigningKey []byte, secureCookies bool, logger *slog.Logger) http.Handler {
+func NewHandler(store Store, clientOrigins []string, csrfSigningKey, cursorSigningKey []byte, secureCookies bool, logger *slog.Logger) http.Handler {
 	s := newServer(store.Ready, logger)
 	s.store, s.auth = store, app.NewAuth(store)
 	s.clientOrigins = append([]string(nil), clientOrigins...)
 	s.csrfSigningKey = append([]byte(nil), csrfSigningKey...)
+	s.cursorSigningKey = append([]byte(nil), cursorSigningKey...)
 	s.secureCookies = secureCookies
 	s.mux.HandleFunc("POST /api/v1/auth/register", s.register)
 	s.mux.HandleFunc("POST /api/v1/auth/login", s.login)
@@ -49,6 +61,19 @@ func NewHandler(store Store, clientOrigins []string, csrfSigningKey []byte, secu
 	s.mux.HandleFunc("GET /api/v1/accounts/by-handle/{handle}", s.accountByHandle)
 	s.mux.HandleFunc("PUT /api/v1/accounts/{accountID}/follow", s.follow)
 	s.mux.HandleFunc("DELETE /api/v1/accounts/{accountID}/follow", s.follow)
+	s.mux.HandleFunc("POST /api/v1/posts", s.createPost)
+	s.mux.HandleFunc("GET /api/v1/posts/{postID}", s.getPost)
+	s.mux.HandleFunc("DELETE /api/v1/posts/{postID}", s.deletePost)
+	s.mux.HandleFunc("GET /api/v1/posts/{postID}/replies", s.listReplies)
+	s.mux.HandleFunc("POST /api/v1/posts/{postID}/replies", s.createReply)
+	s.mux.HandleFunc("DELETE /api/v1/replies/{replyID}", s.deleteReply)
+	s.mux.HandleFunc("PUT /api/v1/posts/{postID}/reaction", s.reaction)
+	s.mux.HandleFunc("DELETE /api/v1/posts/{postID}/reaction", s.reaction)
+	s.mux.HandleFunc("PUT /api/v1/posts/{postID}/repost", s.repost)
+	s.mux.HandleFunc("DELETE /api/v1/posts/{postID}/repost", s.repost)
+	s.mux.HandleFunc("PUT /api/v1/posts/{postID}/bookmark", s.bookmark)
+	s.mux.HandleFunc("DELETE /api/v1/posts/{postID}/bookmark", s.bookmark)
+	s.mux.HandleFunc("GET /api/v1/me/bookmarks", s.listBookmarks)
 	return s.handler()
 }
 

@@ -20,13 +20,14 @@ const (
 )
 
 type Config struct {
-	Environment     string
-	DatabaseURL     string
-	HTTPAddr        string
-	APIPublicOrigin string
-	ClientOrigins   []string
-	CSRFSigningKey  []byte
-	SecureCookies   bool
+	Environment      string
+	DatabaseURL      string
+	HTTPAddr         string
+	APIPublicOrigin  string
+	ClientOrigins    []string
+	CSRFSigningKey   []byte
+	CursorSigningKey []byte
+	SecureCookies    bool
 }
 
 // Load validates only the settings needed by the requested binary role.
@@ -86,6 +87,13 @@ func load(role Role, getenv func(string) string) (Config, error) {
 	cfg.CSRFSigningKey, err = hex.DecodeString(getenv("CSRF_SIGNING_KEY"))
 	if err != nil || len(cfg.CSRFSigningKey) != 32 {
 		return Config{}, errors.New("CSRF_SIGNING_KEY must encode 32 random bytes as 64 hexadecimal characters")
+	}
+	cfg.CursorSigningKey, err = hex.DecodeString(getenv("CURSOR_SIGNING_KEY"))
+	if err != nil || len(cfg.CursorSigningKey) != 32 {
+		return Config{}, errors.New("CURSOR_SIGNING_KEY must encode 32 random bytes as 64 hexadecimal characters")
+	}
+	if slices.Equal(cfg.CursorSigningKey, cfg.CSRFSigningKey) {
+		return Config{}, errors.New("CURSOR_SIGNING_KEY must differ from CSRF_SIGNING_KEY")
 	}
 	// Non-secure cookies are only possible for validated loopback HTTP origins
 	// with explicit development mode. HTTPS always uses the production cookie.

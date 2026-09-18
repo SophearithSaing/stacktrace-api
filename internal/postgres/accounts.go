@@ -57,7 +57,7 @@ func (q *Queries) ProfileByHandle(ctx context.Context, handle string, viewer app
 }
 
 // Independent subqueries avoid multiplying counts; one statement gives a
-// consistent snapshot. PostCount stays zero until the content schema arrives.
+// consistent snapshot.
 func (q *Queries) profile(ctx context.Context, predicate, value string, viewer app.ID) (app.AccountProfile, error) {
 	ctx, cancel := q.queryContext(ctx)
 	defer cancel()
@@ -67,12 +67,13 @@ func (q *Queries) profile(ctx context.Context, predicate, value string, viewer a
 		a.role_label, a.status_text, a.specialty, a.appearance_key, a.verified_at, a.created_at, a.updated_at,
 		(SELECT count(*) FROM follows WHERE followed_id = a.id),
 		(SELECT count(*) FROM follows WHERE follower_id = a.id),
+		(SELECT count(*) FROM posts WHERE author_id = a.id AND deleted_at IS NULL),
 		CASE WHEN $2::uuid IS NULL THEN NULL ELSE EXISTS (
 			SELECT 1 FROM follows WHERE follower_id = $2 AND followed_id = a.id) END
 		FROM accounts a WHERE `+predicate+` AND a.disabled_at IS NULL`, value, nullableID(viewer)).Scan(
 		&a.ID, &a.Type, &a.Handle, &a.DisplayName, &a.Initials, &a.Bio, &a.RoleLabel, &a.StatusText,
 		&a.Specialty, &a.AppearanceKey, &a.VerifiedAt, &a.CreatedAt, &a.UpdatedAt,
-		&profile.FollowerCount, &profile.FollowingCount, &profile.ViewerFollowing)
+		&profile.FollowerCount, &profile.FollowingCount, &profile.PostCount, &profile.ViewerFollowing)
 	return profile, databaseError(ctx, err)
 }
 

@@ -71,7 +71,8 @@ abstractions and infrastructure for features that have not been requested.
 - Runner changes also require `python3 scripts/test_runner.py` for lifecycle,
   failure/interruption, and concurrency contracts. See
   `docs/development-testing.md` for recovery and implementation details.
-- Project OpenCode rules allow the documented make commands. Custom agents use
-  their own effective permissions; verify execution through the implementation
-  agent when changing permission policies. Preserve unrelated configuration.
+- Use existing OpenCode permissions for the documented commands. Project-specific
+  allowances are deferred until needed. Custom agents use their own effective
+  permissions; verify execution when changing policies and preserve unrelated
+  configuration.
 - Ordinary tests and smoke checks must not make paid provider calls.

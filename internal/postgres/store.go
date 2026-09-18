@@ -84,9 +84,18 @@ func (s *Store) Ping(ctx context.Context) error {
 // Transaction rolls back on callback failure, cancellation, or panic. The
 // callback must use its Queries argument for every operation in the unit of work.
 func (s *Store) Transaction(ctx context.Context, fn func(*Queries) error) error {
+	return s.transaction(ctx, nil, fn)
+}
+
+// readSnapshot gives multi-statement projections one bounded, coherent view.
+func (s *Store) readSnapshot(ctx context.Context, fn func(*Queries) error) error {
+	return s.transaction(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, fn)
+}
+
+func (s *Store) transaction(ctx context.Context, options *sql.TxOptions, fn func(*Queries) error) error {
 	ctx, cancel := context.WithTimeout(ctx, transactionTimeout)
 	defer cancel()
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(ctx, options)
 	if err != nil {
 		return databaseError(ctx, err)
 	}

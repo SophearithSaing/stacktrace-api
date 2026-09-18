@@ -15,12 +15,15 @@ type unusedStore struct{ Store }
 func (unusedStore) Ready(context.Context) error { return nil }
 
 func TestCORSAndOriginGuards(t *testing.T) {
-	handler := NewHandler(unusedStore{}, []string{"http://localhost:5173"}, []byte(strings.Repeat("k", 32)), false, testLogger())
+	handler := NewHandler(unusedStore{}, []string{"http://localhost:5173"}, []byte(strings.Repeat("k", 32)), []byte(strings.Repeat("c", 32)), false, testLogger())
 	for _, tt := range []struct {
 		name, method, path, origin, requestedMethod, headers string
 		status                                               int
 	}{
 		{"allowed preflight", "OPTIONS", "/api/v1/auth/logout", "http://localhost:5173", "POST", "Content-Type, X-CSRF-Token, Idempotency-Key", 204},
+		{"post preflight", "OPTIONS", "/api/v1/posts", "http://localhost:5173", "POST", "Content-Type, X-CSRF-Token, Idempotency-Key", 204},
+		{"reply preflight", "OPTIONS", "/api/v1/posts/00000000-0000-0000-0000-000000000000/replies", "http://localhost:5173", "POST", "Content-Type, X-CSRF-Token, Idempotency-Key", 204},
+		{"relationship preflight", "OPTIONS", "/api/v1/posts/00000000-0000-0000-0000-000000000000/bookmark", "http://localhost:5173", "PUT", "X-CSRF-Token", 204},
 		{"null", "OPTIONS", "/api/v1/auth/logout", "null", "POST", "", 403},
 		{"missing", "OPTIONS", "/api/v1/auth/logout", "", "POST", "", 403},
 		{"suffix", "OPTIONS", "/api/v1/auth/logout", "http://localhost:5173.evil.test", "POST", "", 403},
@@ -75,7 +78,7 @@ func TestCORSAndOriginGuards(t *testing.T) {
 }
 
 func TestCORSOnEarlyErrorsAndDuplicateOrigin(t *testing.T) {
-	handler := NewHandler(unusedStore{}, []string{"http://localhost:5173"}, []byte(strings.Repeat("k", 32)), false, testLogger())
+	handler := NewHandler(unusedStore{}, []string{"http://localhost:5173"}, []byte(strings.Repeat("k", 32)), []byte(strings.Repeat("c", 32)), false, testLogger())
 	r := httptest.NewRequest("POST", "/api/v1/auth/register", strings.NewReader(strings.Repeat(" ", maxBodyBytes+1)))
 	r.Header.Set("Origin", "http://localhost:5173")
 	w := httptest.NewRecorder()

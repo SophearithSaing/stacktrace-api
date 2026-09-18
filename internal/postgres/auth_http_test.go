@@ -36,7 +36,7 @@ func identityHandler(t *testing.T) (*Store, http.Handler) {
 	if err := store.Migrate(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	return store, api.NewHandler(store, []string{testOrigin}, []byte(strings.Repeat("k", 32)), false, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	return store, api.NewHandler(store, []string{testOrigin}, []byte(strings.Repeat("k", 32)), []byte(strings.Repeat("c", 32)), false, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 }
 
 func identityRequest(handler http.Handler, method, path, body string, session *browserSession, ip string) *httptest.ResponseRecorder {

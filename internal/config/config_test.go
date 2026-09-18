@@ -7,11 +7,12 @@ import (
 
 func serverEnvironment() map[string]string {
 	return map[string]string{
-		"APP_ENV":           "development",
-		"DATABASE_URL":      "postgres://stacktrace:private-password@localhost:5432/stacktrace?sslmode=disable",
-		"API_PUBLIC_ORIGIN": "http://localhost:8080",
-		"CLIENT_ORIGINS":    "http://localhost:5173",
-		"CSRF_SIGNING_KEY":  strings.Repeat("ab", 32),
+		"APP_ENV":            "development",
+		"DATABASE_URL":       "postgres://stacktrace:private-password@localhost:5432/stacktrace?sslmode=disable",
+		"API_PUBLIC_ORIGIN":  "http://localhost:8080",
+		"CLIENT_ORIGINS":     "http://localhost:5173",
+		"CSRF_SIGNING_KEY":   strings.Repeat("ab", 32),
+		"CURSOR_SIGNING_KEY": strings.Repeat("cd", 32),
 	}
 }
 
@@ -25,12 +26,13 @@ func TestLoadRoles(t *testing.T) {
 	if cfg.HTTPAddr != "127.0.0.1:8080" || cfg.APIPublicOrigin != env["API_PUBLIC_ORIGIN"] || len(cfg.ClientOrigins) != 1 || cfg.ClientOrigins[0] != env["CLIENT_ORIGINS"] {
 		t.Fatalf("unexpected local server settings: address=%q origin=%q clients=%v", cfg.HTTPAddr, cfg.APIPublicOrigin, cfg.ClientOrigins)
 	}
-	if cfg.SecureCookies || len(cfg.CSRFSigningKey) != 32 {
+	if cfg.SecureCookies || len(cfg.CSRFSigningKey) != 32 || len(cfg.CursorSigningKey) != 32 {
 		t.Fatal("incorrect development cookie/key settings")
 	}
 	delete(env, "API_PUBLIC_ORIGIN")
 	delete(env, "CLIENT_ORIGINS")
 	delete(env, "CSRF_SIGNING_KEY")
+	delete(env, "CURSOR_SIGNING_KEY")
 	if _, err := load(Database, getenv); err != nil {
 		t.Fatalf("database role should not require HTTP settings: %v", err)
 	}
@@ -69,6 +71,10 @@ func TestLoadRejectsInvalidSettings(t *testing.T) {
 		{"CSRF_SIGNING_KEY", ""},
 		{"CSRF_SIGNING_KEY", strings.Repeat("g", 64)},
 		{"CSRF_SIGNING_KEY", strings.Repeat("ab", 31)},
+		{"CURSOR_SIGNING_KEY", ""},
+		{"CURSOR_SIGNING_KEY", strings.Repeat("g", 64)},
+		{"CURSOR_SIGNING_KEY", strings.Repeat("cd", 31)},
+		{"CURSOR_SIGNING_KEY", strings.Repeat("ab", 32)},
 		{"DATABASE_URL", ""},
 		{"DATABASE_URL", "mysql://localhost/stacktrace"},
 		{"DATABASE_URL", "postgres://private-password%zz@localhost/db"},

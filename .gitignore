@@ -2,6 +2,7 @@
 .env.*
 !.env.example
 docs/
+.dev/
 
 /bin/
 /coverage.out

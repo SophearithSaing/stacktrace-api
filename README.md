@@ -2,51 +2,41 @@
 
 ## Prerequisites
 
-- Go 1.26.5
-- Docker with Compose v2+ and a running daemon
-- OpenSSL
+- Linux, Go 1.26.5, Bash, Make, Python 3, curl, OpenSSL, and util-linux
+  (`flock`, `setsid`, plus standard coreutils including `timeout`).
+- Docker with an accessible running daemon (preferred, using `postgres:18`);
+  or native PostgreSQL server/client binaries discoverable through `pg_config`,
+  running as a non-root user, when Docker is unavailable.
+  The runner reports the selected backend/version and preserves that choice for
+  existing development data. Docker Compose is optional for manual setup.
 
 ## Local setup
 
-Run from the repository root:
+Run from the repository root; no `.env` file or manual secret generation needed:
 
 ```sh
-cp .env.example .env
+make dev-up
+make dev-status
+make dev-down
 ```
 
-Set `POSTGRES_PASSWORD` in `.env` to the output of `openssl rand -hex 24`.
-Set `CSRF_SIGNING_KEY` to the output of `openssl rand -hex 32`.
-Set `CURSOR_SIGNING_KEY` independently to the output of `openssl rand -hex 32`.
-The two signing keys must differ. Both are required by `cmd/server` in every
-mode; `cmd/db` requires neither.
-Keep the same password when reusing the database volume. Then run:
+`dev-up` builds the API, starts PostgreSQL, explicitly migrates and seeds, and
+returns once the API is ready. Run it again to rebuild/restart after code changes.
+A failed build preserves the existing API. `dev-down` preserves development data
+and generated credentials in Git-ignored `.dev/`.
+
+Default API: `http://localhost:8080`; client origin: `http://localhost:5173`.
+Use a different API port for another worktree, or override frontend origins:
 
 ```sh
-set -a
-. ./.env
-set +a
-export DATABASE_URL="postgres://stacktrace:${POSTGRES_PASSWORD}@localhost:${POSTGRES_PORT}/stacktrace?sslmode=disable"
-
-docker compose up -d --wait postgres
-go mod download
-go run ./cmd/db ping
-go run ./cmd/db migrate
-go run ./cmd/db seed # Optional, repeatable demo agents and real follows
-go run ./cmd/server
+DEV_PORT=8081 DEV_CLIENT_ORIGINS=http://localhost:5174 make dev-up
 ```
 
-Load `.env` and export `DATABASE_URL` in each new shell; Go commands do not load
-`.env` automatically. Local API: `http://localhost:8080`; client: `http://localhost:5173`.
-
-In another terminal:
-
-```sh
-curl -i http://localhost:8080/healthz
-curl -i http://localhost:8080/readyz
-```
-
-Stop the server with Ctrl-C and PostgreSQL with `docker compose down`.
-Use `docker compose down -v` only to delete the local database.
+Supply these overrides on each startup. Managed commands ignore ambient
+deployment settings, including `DATABASE_URL` and signing keys. `.env.example`
+documents direct application execution; application commands read only their
+process environment. Lifecycle details and recovery:
+[`docs/development-testing.md`](docs/development-testing.md).
 
 ## Package layout
 
@@ -59,24 +49,30 @@ internal/app      Domain types and rules
 internal/postgres PostgreSQL persistence
 migrations        Embedded, ordered SQL migrations
 seed              Credential-free demo identities and relationships
+scripts           Managed development, disposable verification, smoke checks
 ```
 
 ## Build and test
 
 ```sh
-go build ./...
-go test ./...
-go test -race ./...
-go vet ./...
+make check
+make test TEST_ARGS='-run TestMigrate -v'
+make smoke
 ```
 
-PostgreSQL integration tests (create/drop isolated schemas; require schema-creation permission):
+`make check` runs build, vet, normal tests, and race tests with real PostgreSQL
+and test caching disabled. `make test` accepts whitespace-separated Go test
+flags through `TEST_ARGS` (no shell evaluation or embedded-space arguments).
+Each test/check/smoke invocation owns disposable resources, supports concurrent
+runs, and cleans up afterward. Failures retain logs at the printed path.
 
-```sh
-TEST_DATABASE_URL="$DATABASE_URL" go test -race ./... -count=1
-```
+`make smoke` owns a built API and checks readiness, seeded profiles, registration,
+authenticated access, logout invalidation, and shutdown. Run it along with
+`make check` when changing startup, configuration, migrations/seeding, or HTTP
+and session behavior. Runner changes also require `python3 scripts/test_runner.py`.
 
-Skipped unless `TEST_DATABASE_URL` is set.
+Direct `go test ./...` skips database tests unless `TEST_DATABASE_URL` is set;
+use the managed commands for complete verification. No paid providers are called.
 
 ## Authentication and profiles
 

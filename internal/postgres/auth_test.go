@@ -80,3 +80,34 @@ func TestSeedCollisionRollsBackWithoutAdoptingHuman(t *testing.T) {
 		t.Fatal("seed adopted an existing human")
 	}
 }
+
+func TestSeedPreservesProfileEdits(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SeedDemo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE accounts SET display_name='Local name', bio='Local bio' WHERE handle='golang'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SeedDemo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var displayName, bio string
+	if err := store.db.QueryRowContext(ctx, `SELECT display_name, bio FROM accounts WHERE handle='golang'`).Scan(&displayName, &bio); err != nil {
+		t.Fatal(err)
+	}
+	if displayName != "Local name" || bio != "Local bio" {
+		t.Fatal("repeated seed overwrote local profile edits")
+	}
+	var accounts, follows int
+	if err := store.db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM accounts), (SELECT count(*) FROM follows)`).Scan(&accounts, &follows); err != nil {
+		t.Fatal(err)
+	}
+	if accounts != 2 || follows != 2 {
+		t.Fatalf("repeated seed duplicated fixtures: %d accounts, %d follows", accounts, follows)
+	}
+}

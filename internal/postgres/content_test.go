@@ -95,7 +95,12 @@ func TestReplyPageEqualTimestampKeyset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stamp := time.Now().UTC().Truncate(time.Microsecond)
+	// Use the same clock as the pagination ceiling; Docker's VM clock can
+	// differ from the host clock running this test.
+	var stamp time.Time
+	if err := store.db.QueryRowContext(ctx, `SELECT statement_timestamp()`).Scan(&stamp); err != nil {
+		t.Fatal(err)
+	}
 	ids := []app.ID{app.NewID(), app.NewID(), app.NewID()}
 	for _, id := range ids {
 		if _, err := store.db.ExecContext(ctx, `INSERT INTO replies(id,post_id,author_id,body,created_at) SELECT $1,$2,account_id,'same',$3 FROM sessions WHERE token_hash=$4`, id, post.ID, stamp, session); err != nil {

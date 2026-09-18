@@ -122,7 +122,7 @@ func TestFailureContract(t *testing.T) {
 	}{
 		{app.ErrInvalidID, 400}, {app.ErrUnauthenticated, 401}, {app.ErrForbidden, 403},
 		{app.ErrNotFound, 404}, {app.ErrConflict, 409}, {app.ErrDeleted, 410},
-		{app.ErrInvalidHandle, 422}, {app.ErrUnavailable, 503},
+		{app.ErrInvalidHandle, 422}, {app.ErrInvalidIdempotencyKey, 400}, {app.ErrInvalidReactionKind, 422}, {app.ErrUnavailable, 503},
 		{context.DeadlineExceeded, 503}, {context.Canceled, 503}, {errors.New("secret SQL error"), 500},
 	} {
 		response := httptest.NewRecorder()

@@ -78,6 +78,10 @@ func writeFailure(w http.ResponseWriter, err error) {
 		writeErrorFields(w, http.StatusUnprocessableEntity, "validation_failed", "Validation failed", validation.Fields)
 	case errors.Is(err, app.ErrInvalidID):
 		writeError(w, http.StatusBadRequest, "invalid_id", "Invalid resource ID")
+	case errors.Is(err, app.ErrInvalidIdempotencyKey):
+		writeError(w, http.StatusBadRequest, "invalid_idempotency_key", "Idempotency-Key is missing or invalid")
+	case errors.Is(err, app.ErrInvalidReactionKind):
+		writeErrorFields(w, http.StatusUnprocessableEntity, "validation_failed", "Validation failed", map[string]string{"kind": app.ErrInvalidReactionKind.Error()})
 	case errors.Is(err, app.ErrInvalidHandle):
 		writeErrorFields(w, http.StatusUnprocessableEntity, "validation_failed", "Validation failed", map[string]string{"handle": app.ErrInvalidHandle.Error()})
 	case errors.Is(err, app.ErrUnauthenticated):

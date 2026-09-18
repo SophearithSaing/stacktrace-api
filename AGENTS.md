@@ -56,6 +56,22 @@ abstractions and infrastructure for features that have not been requested.
   requested implementation slice and mark work complete only after verification.
 - Keep tests alongside the behavior they verify. Test meaningful contracts and
   failure/concurrency cases; avoid tests that merely repeat implementation details.
-- Relevant checks: `go build ./...`, `go test ./...`, `go test -race ./...`, and
-  `go vet ./...`. Use `TEST_DATABASE_URL` for PostgreSQL integration tests; run
-  those with `-count=1`. Ordinary tests must not make paid provider calls.
+- Run `make check` directly for full verification. It runs build, vet, normal
+  tests, and race tests with disposable real PostgreSQL and caching disabled.
+- Use `make test TEST_ARGS='-run TestName -v'` for focused verification. Tests
+  create isolated schemas inside the runner's disposable database.
+- Run `make smoke` for live-server checks, in addition to `make check` when
+  changing startup, configuration, migrations/seeding, or HTTP/session behavior.
+- Use `make dev-up`, `make dev-status`, and `make dev-down` for interactive API
+  work. Development data survives shutdown; each checkout owns one instance.
+- Use the lifecycle commands and respect ownership. Concurrent agents should
+  normally use isolated test/smoke runs. Do not stop another run's processes.
+- Treat dependency startup or cleanup failures as blockers. Report the printed
+  diagnostics path; do not substitute Go tests that skip PostgreSQL coverage.
+- Runner changes also require `python3 scripts/test_runner.py` for lifecycle,
+  failure/interruption, and concurrency contracts. See
+  `docs/development-testing.md` for recovery and implementation details.
+- Project OpenCode rules allow the documented make commands. Custom agents use
+  their own effective permissions; verify execution through the implementation
+  agent when changing permission policies. Preserve unrelated configuration.
+- Ordinary tests and smoke checks must not make paid provider calls.

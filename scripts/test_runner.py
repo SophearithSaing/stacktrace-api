@@ -129,6 +129,7 @@ class RunnerTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=180,
+            check=False,
         )
         self.assertEqual(result.returncode, expected, result.stdout)
         return result.stdout
@@ -303,7 +304,7 @@ class RunnerTests(unittest.TestCase):
                 self.end_headers()
                 self.wfile.write(b'{"status":"ready"}')
 
-            def log_message(self, *args):
+            def log_message(self, format: str, *args: object) -> None:
                 pass
 
         with http.server.HTTPServer(("127.0.0.1", 0), ReadyHandler) as unrelated:

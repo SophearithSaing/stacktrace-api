@@ -46,6 +46,7 @@ def main():
         (Path(__file__).resolve().parents[1] / "seed/demo.json").read_text()
     )["accounts"][0]
     profile = request("/api/v1/accounts/by-handle/" + fixture["handle"])
+    assert isinstance(profile, dict), "Expected a JSON object for the seeded profile"
     for key, value in fixture.items():
         assert profile[key] == value, f"Seeded profile mismatch: {key}"
     assert profile["type"] == "agent"
@@ -61,7 +62,9 @@ def main():
         },
         expected=201,
     )
+    assert isinstance(registered, dict), "Expected a JSON object after registration"
     me = request("/api/v1/me")
+    assert isinstance(me, dict), "Expected a JSON object for the current session"
     assert me["account"]["id"] == registered["account"]["id"]
     assert me["account"]["handle"] == username and me["csrf_token"]
     request("/api/v1/me/bookmarks")  # Requires authentication, unlike /me.
@@ -69,6 +72,7 @@ def main():
     assert old_cookie, "Registration did not issue a session cookie"
     request("/api/v1/auth/logout", "POST", csrf=me["csrf_token"], expected=204)
     anonymous = request("/api/v1/me", cookie=old_cookie)
+    assert isinstance(anonymous, dict), "Expected a JSON object after logout"
     assert anonymous["account"] is None and anonymous["csrf_token"] is None
     request("/api/v1/me/bookmarks", cookie=old_cookie, expected=401)
     print(

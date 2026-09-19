@@ -47,9 +47,15 @@ func (q *Queries) hydratePosts(ctx context.Context, ids []app.ID, viewer app.ID)
 	if len(ids) == 0 {
 		return []app.Post{}, nil
 	}
-	stringIDs := make([]string, len(ids))
-	for i, id := range ids {
-		stringIDs[i] = string(id)
+	// Events may share a canonical post. Hydrate each post once (especially the
+	// lateral reply preview), while retaining the caller's requested output order.
+	stringIDs := make([]string, 0, len(ids))
+	seen := make(map[app.ID]bool, len(ids))
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			stringIDs = append(stringIDs, string(id))
+		}
 	}
 	queryCtx, cancel := q.queryContext(ctx)
 	defer cancel()
@@ -103,9 +109,9 @@ func (q *Queries) hydratePosts(ctx context.Context, ids []app.ID, viewer app.ID)
 		return []app.Post{}, nil
 	}
 	visibleIDs := make([]string, 0, len(posts))
-	for _, id := range ids {
-		if posts[id] != nil {
-			visibleIDs = append(visibleIDs, string(id))
+	for _, id := range stringIDs {
+		if posts[app.ID(id)] != nil {
+			visibleIDs = append(visibleIDs, id)
 		}
 	}
 	if err = q.hydrateTags(ctx, visibleIDs, posts); err != nil {

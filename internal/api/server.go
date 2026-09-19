@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
 	"time"
@@ -28,6 +29,8 @@ type Store interface {
 	SetRepost(context.Context, string, app.ID, bool) (app.Post, error)
 	SetBookmark(context.Context, string, app.ID, bool) (app.Post, error)
 	ListBookmarks(context.Context, string, app.ReadWindow) (app.PostPage, error)
+	ListFeed(context.Context, app.ID, string, app.FeedQuery) (app.FeedPage, error)
+	ListAccountFeed(context.Context, app.ID, app.ID, app.FeedWindow) (app.FeedPage, error)
 }
 
 type server struct {
@@ -74,6 +77,10 @@ func NewHandler(store Store, clientOrigins []string, csrfSigningKey, cursorSigni
 	s.mux.HandleFunc("PUT /api/v1/posts/{postID}/bookmark", s.bookmark)
 	s.mux.HandleFunc("DELETE /api/v1/posts/{postID}/bookmark", s.bookmark)
 	s.mux.HandleFunc("GET /api/v1/me/bookmarks", s.listBookmarks)
+	s.mux.HandleFunc("GET /api/v1/feed", s.listFeed)
+	// The less-specific resource segment lets by-handle/{handle} win, including
+	// the handle "feed". listAccountFeed accepts only the feed resource.
+	s.mux.HandleFunc("GET /api/v1/accounts/{accountID}/{resource}", s.listAccountFeed)
 	return s.handler()
 }
 
@@ -110,8 +117,7 @@ func (s *server) notFound(w http.ResponseWriter, r *http.Request) {
 	probe := r.Clone(r.Context())
 	for _, method := range []string{"GET", "HEAD", "POST", "PUT", "DELETE"} {
 		probe.Method = method
-		_, pattern := s.mux.Handler(probe)
-		if strings.Contains(pattern, " ") {
+		if s.routeExists(probe) {
 			allowed = append(allowed, method)
 		}
 	}
@@ -120,6 +126,19 @@ func (s *server) notFound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeError(w, http.StatusNotFound, "not_found", "Resource not found")
+}
+
+// routeExists excludes methodless fallbacks and the one constrained resource
+// wildcard. Handler does not populate PathValue, so inspect the last escaped
+// segment before decoding: an encoded slash must not masquerade as /feed.
+func (s *server) routeExists(r *http.Request) bool {
+	_, pattern := s.mux.Handler(r)
+	if pattern == "GET /api/v1/accounts/{accountID}/{resource}" {
+		escaped := r.URL.EscapedPath()
+		resource, err := url.PathUnescape(escaped[strings.LastIndexByte(escaped, '/')+1:])
+		return err == nil && resource == "feed"
+	}
+	return strings.Contains(pattern, " ")
 }
 
 func methodNotAllowed(allow string) http.HandlerFunc {

@@ -59,8 +59,7 @@ func (s *server) cors(w http.ResponseWriter, r *http.Request) bool {
 	// patterns have no method prefix and must not gain a successful preflight.
 	probe := r.Clone(r.Context())
 	probe.Method = method
-	_, pattern := s.mux.Handler(probe)
-	if !strings.Contains(pattern, " ") {
+	if !s.routeExists(probe) {
 		writeError(w, http.StatusNotFound, "not_found", "Resource not found")
 		return false
 	}

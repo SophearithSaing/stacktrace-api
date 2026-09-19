@@ -104,7 +104,10 @@ case "$command" in
             # Smoke does not depend on interactive development overrides.
             unset DEV_CLIENT_ORIGINS
             start_api 1 0
-            run python3 scripts/smoke.py "$API_PUBLIC_ORIGIN"
+            run python3 scripts/smoke.py "$API_PUBLIC_ORIGIN" setup "$state/smoke-fixture.json"
+            stop_process api
+            start_api 1 0
+            run python3 scripts/smoke.py "$API_PUBLIC_ORIGIN" verify "$state/smoke-fixture.json"
         else
             start_api 0 "${DEV_PORT:-8080}"
             echo "Logs: $state/api.log, $state/postgres.log, $state/commands.log"

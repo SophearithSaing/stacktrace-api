@@ -329,7 +329,10 @@ class RunnerTests(unittest.TestCase):
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             smoke = [pool.submit(self.command, "make", "smoke") for _ in range(2)]
             for result in smoke:
-                self.assertIn("Smoke passed", result.result())
+                output = result.result()
+                self.assertIn("Smoke passed", output)
+                self.assertIn("after API restart", output)
+                self.assertEqual(output.count("API ready:"), 2, output)
             tests = [
                 pool.submit(self.command, "make", "test", "TEST_ARGS=-run TestSeed -v")
                 for _ in range(2)
@@ -337,6 +340,40 @@ class RunnerTests(unittest.TestCase):
             for result in tests:
                 self.assertIn("PASS: TestSeedPreservesProfileEdits", result.result())
         self.assertEqual(list((self.checkout / ".dev/runs").iterdir()), [])
+
+    def test_smoke_restart_verification_failure_cleans_services(self):
+        smoke = self.checkout / "scripts/smoke.py"
+        original = smoke.read_text()
+        try:
+            # Fail only after setup and the second API startup, exercising the
+            # existing ownership cleanup/trap path for the new verify phase.
+            smoke.write_text(
+                'import sys\nif len(sys.argv) > 2 and sys.argv[2] == "verify":\n'
+                '    raise SystemExit(77)\n'
+                + original
+            )
+            output = self.command("make", "smoke", expected=2)
+            self.assertEqual(output.count("API ready:"), 2, output)
+            self.assertIn("Smoke setup passed", output)
+            runs = list((self.checkout / ".dev/runs").iterdir())
+            self.assertEqual(len(runs), 1)
+            state = runs[0]
+            self.assertFalse(running(state / "api.pid"))
+            self.assertFalse(running(state / "job.pid"))
+            self.assertFalse((state / "password").exists())
+            self.assert_database_removed(state)
+            fixture = json.loads((state / "smoke-fixture.json").read_text())
+            self.assertEqual(
+                set(fixture),
+                {
+                    "account_id", "followed_id", "follower_count", "tag", "post_id",
+                    "body", "code", "counts", "quote_id", "quote_body", "reply_ids", "event_ids",
+                },
+            )
+            self.assertEqual((state / "smoke-fixture.json").stat().st_mode & 0o777, 0o600)
+            self.command("bash", "scripts/dev.sh", "clean-run", str(state))
+        finally:
+            smoke.write_text(original)
 
     def test_test_failure_retains_logs_and_removes_services(self):
         self.command("make", "test", "TEST_ARGS=-run [", expected=2)

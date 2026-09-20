@@ -257,3 +257,37 @@ func TestGenerationRemovedRepost(t *testing.T) {
 		t.Fatal("claimed removed repost")
 	}
 }
+
+func TestGenerationJobTimingBoundaries(t *testing.T) {
+	running := testRunningJob()
+	running.AvailableAt = *running.LeaseExpiresAt
+	if err := running.Validate(); err == nil {
+		t.Fatal("lease expired before job became due")
+	}
+	running = testRunningJob()
+	now := running.CreatedAt.Add(30 * time.Second)
+	attempt := testGenerationAttempt(running)
+	attempt.Status, attempt.FinishedAt = AttemptSucceeded, &now
+	success := running
+	result := NewID()
+	success.Status, success.LeaseExpiresAt, success.FinishedAt = JobSucceeded, nil, &now
+	success.ResultPostID, success.PublishedAttemptID = &result, &attempt.ID
+	for _, expiredAt := range []time.Time{*running.LeaseExpiresAt, running.ExpiresAt} {
+		success.FinishedAt = &expiredAt
+		if err := ValidateGenerationJobTransition(running, success, 1, expiredAt, &attempt); err == nil {
+			t.Fatal("published on expiry boundary")
+		}
+	}
+	success.FinishedAt = &now
+	success.AvailableAt = now.Add(time.Second)
+	if err := success.Validate(); err == nil {
+		t.Fatal("published before job became due")
+	}
+	failed := running
+	failed.Status, failed.LeaseExpiresAt, failed.FinishedAt, failed.ReasonCode = JobFailed, nil, &now, "provider_failed"
+	retry := failed
+	retry.Status, retry.FinishedAt, retry.AvailableAt = JobRetryWait, nil, now
+	if err := ValidateGenerationJobTransition(failed, retry, 1, now.Add(-time.Second), nil); err == nil {
+		t.Fatal("retried before recorded failure")
+	}
+}

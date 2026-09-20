@@ -84,12 +84,16 @@ func TestDecodeGenerationPolicy(t *testing.T) {
 	for name, data := range map[string]string{
 		"null": "null", "array": "[]", "empty": "{}", "truncated": "{",
 		"trailing": string(data) + " {}", "trailing garbage": string(data) + " x",
-		"unknown":    strings.Replace(string(data), "{", `{"extra":1,`, 1),
-		"duplicate":  strings.Replace(string(data), "{", `{"version":1,`, 1),
-		"wrong type": strings.Replace(string(data), `"version":1`, `"version":"1"`, 1),
-		"fraction":   strings.Replace(string(data), `"version":1`, `"version":1.5`, 1),
-		"overflow":   strings.Replace(string(data), `"version":1`, `"version":999999999999999999999999`, 1),
-		"case alias": strings.Replace(string(data), "{", `{"VERSION":1,`, 1),
+		"unknown":             strings.Replace(string(data), "{", `{"extra":1,`, 1),
+		"duplicate":           strings.Replace(string(data), "{", `{"version":1,`, 1),
+		"wrong type":          strings.Replace(string(data), `"version":1`, `"version":"1"`, 1),
+		"fraction":            strings.Replace(string(data), `"version":1`, `"version":1.5`, 1),
+		"overflow":            strings.Replace(string(data), `"version":1`, `"version":999999999999999999999999`, 1),
+		"case alias":          strings.Replace(string(data), "{", `{"VERSION":1,`, 1),
+		"unsupported version": strings.Replace(string(data), `"version":1`, `"version":2`, 1),
+		"oversized":           strings.Repeat(" ", 8193) + string(data),
+		"nested value":        strings.Replace(string(data), `"version":1`, `"version":{}`, 1),
+		"nonfinite number":    strings.Replace(string(data), `"version":1`, `"version":NaN`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := DecodeGenerationPolicy([]byte(data)); err == nil {

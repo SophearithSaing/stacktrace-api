@@ -131,7 +131,7 @@ func (j GenerationJob) Validate() error {
 		return fmt.Errorf("invalid job status")
 	}
 	if j.Status == JobRunning {
-		if j.LeaseExpiresAt == nil || !j.LeaseExpiresAt.After(j.CreatedAt) {
+		if j.LeaseExpiresAt == nil || !j.LeaseExpiresAt.After(j.AvailableAt) {
 			return fmt.Errorf("running job requires a lease expiry")
 		}
 	} else if j.LeaseExpiresAt != nil {
@@ -145,7 +145,7 @@ func (j GenerationJob) Validate() error {
 		return fmt.Errorf("unfinished job cannot have a finish time")
 	}
 	if j.Status == JobSucceeded {
-		if j.LeaseVersion == 0 || j.PublishedAttemptID == nil || !j.FinishedAt.Before(j.ExpiresAt) || j.ReasonCode != "" {
+		if j.LeaseVersion == 0 || j.PublishedAttemptID == nil || j.FinishedAt.Before(j.AvailableAt) || !j.FinishedAt.Before(j.ExpiresAt) || j.ReasonCode != "" {
 			return fmt.Errorf("success requires an attempt and unexpired publication")
 		}
 		if j.OutputKind == OutputReply {
@@ -197,8 +197,8 @@ func ValidateGenerationJobTransition(before, after GenerationJob, expectedVersio
 	if before.Status == JobSucceeded || before.Status == JobSkipped || before.Status == JobCancelled {
 		return fmt.Errorf("terminal job cannot change")
 	}
-	if now.Before(before.CreatedAt) {
-		return fmt.Errorf("transition precedes job creation")
+	if now.Before(before.CreatedAt) || before.FinishedAt != nil && now.Before(*before.FinishedAt) {
+		return fmt.Errorf("transition precedes job creation or previous outcome")
 	}
 	if before.TriggerKind == TriggerRepost && before.SourceRepostID == nil && after.Status != JobCancelled && !(after.Status == JobSkipped && after.ReasonCode == "stale_trigger" && !now.Before(before.ExpiresAt)) {
 		return fmt.Errorf("removed repost must cancel, not execute")
@@ -259,7 +259,7 @@ func ValidateGenerationJobTransition(before, after GenerationJob, expectedVersio
 		if err := attempt.Validate(); err != nil {
 			return err
 		}
-		if attempt.ID != *after.PublishedAttemptID || attempt.JobID != after.ID || attempt.LeaseVersion != after.LeaseVersion || attempt.Status != AttemptSucceeded || attempt.StartedAt.Before(before.CreatedAt) || attempt.FinishedAt.After(now) {
+		if attempt.ID != *after.PublishedAttemptID || attempt.JobID != after.ID || attempt.LeaseVersion != after.LeaseVersion || attempt.Status != AttemptSucceeded || attempt.StartedAt.Before(before.AvailableAt) || attempt.FinishedAt.After(now) {
 			return fmt.Errorf("published attempt must be successful and belong to this job and lease")
 		}
 	} else if attempt != nil {
@@ -269,7 +269,13 @@ func ValidateGenerationJobTransition(before, after GenerationJob, expectedVersio
 }
 
 func sameGenerationJobIdentity(a, b GenerationJob) bool {
-	return a.ID == b.ID && a.AgentID == b.AgentID && a.PersonaVersion == b.PersonaVersion && a.TriggerKind == b.TriggerKind && a.TriggerKey == b.TriggerKey && sameGenerationID(a.TriggerActorID, b.TriggerActorID) && a.CooldownKey == b.CooldownKey && sameGenerationID(a.SourcePostID, b.SourcePostID) && sameGenerationID(a.SourceReplyID, b.SourceReplyID) && sameGenerationID(a.SourceRepostID, b.SourceRepostID) && a.OutputKind == b.OutputKind && a.RootJobID == b.RootJobID && a.ChainDepth == b.ChainDepth && a.ExpiresAt.Equal(b.ExpiresAt) && a.CreatedAt.Equal(b.CreatedAt)
+	return a.ID == b.ID && a.AgentID == b.AgentID && a.PersonaVersion == b.PersonaVersion &&
+		a.TriggerKind == b.TriggerKind && a.TriggerKey == b.TriggerKey &&
+		sameGenerationID(a.TriggerActorID, b.TriggerActorID) && a.CooldownKey == b.CooldownKey &&
+		sameGenerationID(a.SourcePostID, b.SourcePostID) && sameGenerationID(a.SourceReplyID, b.SourceReplyID) &&
+		sameGenerationID(a.SourceRepostID, b.SourceRepostID) && a.OutputKind == b.OutputKind &&
+		a.RootJobID == b.RootJobID && a.ChainDepth == b.ChainDepth &&
+		a.ExpiresAt.Equal(b.ExpiresAt) && a.CreatedAt.Equal(b.CreatedAt)
 }
 
 func sameGenerationID(a, b *ID) bool { return a == nil && b == nil || a != nil && b != nil && *a == *b }

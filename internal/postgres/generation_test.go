@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -213,6 +214,7 @@ func TestGenerationStoreConcurrentTriggerAndSettings(t *testing.T) {
 	}
 	// Changed expiry/identity cannot convert the stable original trigger to a
 	// fresh job, even when submitted after completion in a later enqueue path.
+	generationSQL(t, store, `UPDATE generation_jobs SET status='skipped',reason_code='policy',finished_at=available_at WHERE id=$1`, original.ID)
 	changed := original
 	changed.ID = app.NewID()
 	changed.RootJobID, changed.ExpiresAt = changed.ID, original.ExpiresAt.Add(time.Hour)
@@ -232,7 +234,12 @@ func TestGenerationStoreRejectsCorruptReads(t *testing.T) {
 	if _, err := store.InitializeAgentSettings(ctx, settings); err != nil {
 		t.Fatal(err)
 	}
-	for _, policy := range []string{`{"version":1}`, `{"version":1,"secret":"never report me"}`} {
+	validPolicy, err := json.Marshal(settings.Policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknownPolicy := strings.TrimSuffix(string(validPolicy), "}") + `,"secret":"never report me"}`
+	for _, policy := range []string{`{"version":1}`, unknownPolicy, strings.Replace(string(validPolicy), `"UTC"`, `"Invalid/Timezone"`, 1)} {
 		if _, err := store.db.ExecContext(ctx, `UPDATE agent_settings SET policy=$1 WHERE agent_id=$2`, policy, persona.AgentID); err != nil {
 			t.Fatal(err)
 		}
@@ -252,6 +259,8 @@ func TestGenerationStoreRejectsCorruptReads(t *testing.T) {
 	if _, err := store.PersonaByVersion(ctx, persona.AgentID, 2); !errors.Is(err, app.ErrUnavailable) {
 		t.Fatalf("invalid persona read = %v", err)
 	}
+	generationSQL(t, store, `UPDATE agent_settings SET policy=$1 WHERE agent_id=$2`, validPolicy, persona.AgentID)
+	attempt := generationAttempt(t, store, job, 1)
 	if _, err := store.db.ExecContext(ctx, `UPDATE accounts SET type='human' WHERE id=$1`, persona.AgentID); err != nil {
 		t.Fatal(err)
 	}
@@ -260,5 +269,51 @@ func TestGenerationStoreRejectsCorruptReads(t *testing.T) {
 	}
 	if _, err := store.GenerationJobByID(ctx, job.ID); !errors.Is(err, app.ErrUnavailable) {
 		t.Fatalf("human job read = %v", err)
+	}
+	if _, err := store.AgentSettingsByID(ctx, persona.AgentID); !errors.Is(err, app.ErrUnavailable) {
+		t.Fatalf("human settings read = %v", err)
+	}
+	if _, err := store.GenerationAttemptByID(ctx, attempt); !errors.Is(err, app.ErrUnavailable) {
+		t.Fatalf("human attempt read = %v", err)
+	}
+}
+
+func TestGenerationStoreAgentLockAndSafeFailure(t *testing.T) {
+	store, persona, job := generationSetup(t)
+	ctx := context.Background()
+	persona.Version = 2
+	err := store.Transaction(ctx, func(q *Queries) error {
+		if err := q.CreatePersona(ctx, persona); err != nil {
+			return err
+		}
+		// A concurrent account-type update cannot pass the trusted check while
+		// its write transaction is still active. Use a bounded second connection.
+		blocked, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+		defer cancel()
+		otherTx, err := store.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer otherTx.Rollback()
+		_, err = otherTx.ExecContext(blocked, `UPDATE accounts SET type='human' WHERE id=$1`, persona.AgentID)
+		if !errors.Is(databaseError(blocked, err), context.DeadlineExceeded) {
+			return errors.New("account update bypassed generation write lock")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor, _ := contentTestActor(t, store, "safe_failure_actor")
+	missingPost := app.NewID()
+	job.ID = app.NewID()
+	job.RootJobID, job.TriggerKey = job.ID, "private-trigger-value"
+	job.TriggerKind, job.OutputKind = app.TriggerHumanPost, app.OutputReply
+	job.TriggerActorID, job.SourcePostID, job.CooldownKey = &actor, &missingPost, "private-cooldown-value"
+	if err := store.CreateGenerationJob(ctx, job); !errors.Is(err, app.ErrUnavailable) {
+		t.Fatalf("unsafe FK failure = %v", err)
+	}
+	if _, err := store.GenerationJobByID(ctx, job.ID); !errors.Is(err, app.ErrNotFound) {
+		t.Fatalf("failed job was persisted: %v", err)
 	}
 }

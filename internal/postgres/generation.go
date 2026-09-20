@@ -130,8 +130,8 @@ func (q *Queries) AgentSettingsByID(ctx context.Context, agentID app.ID) (app.Ag
 	if err != nil {
 		return app.AgentSettings{}, databaseError(ctx, err)
 	}
-	// GenerationPolicy.UnmarshalJSON rejects missing/unknown fields and versions.
-	if json.Unmarshal(policy, &settings.Policy) != nil || settings.Validate() != nil || accountType != app.AccountAgent {
+	settings.Policy, err = app.DecodeGenerationPolicy(policy)
+	if err != nil || settings.Validate() != nil || accountType != app.AccountAgent {
 		return app.AgentSettings{}, app.ErrUnavailable
 	}
 	return settings, nil

@@ -30,8 +30,13 @@ func (p Persona) Validate() error {
 	}
 	seen := make(map[string]bool)
 	for _, tag := range p.TopicTags {
-		if !validGenerationText(tag, 64) || tag != strings.TrimSpace(tag) || tag != strings.ToLower(tag) || seen[tag] {
-			return fmt.Errorf("persona tags must be unique lowercase trimmed text of 1-64 bytes")
+		if len(tag) < 1 || len(tag) > 64 || tag != strings.ToLower(tag) || seen[tag] {
+			return fmt.Errorf("persona tags must be unique lowercase ASCII letter/digit/underscore slugs of 1-64 bytes")
+		}
+		for i := range len(tag) {
+			if !isTagCharacter(tag[i]) {
+				return fmt.Errorf("persona tags must contain only ASCII letters, digits or underscores")
+			}
 		}
 		seen[tag] = true
 	}

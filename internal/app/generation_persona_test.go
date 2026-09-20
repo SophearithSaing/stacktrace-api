@@ -47,6 +47,22 @@ func TestPersonaValidationAndImmutability(t *testing.T) {
 	}
 }
 
+func TestPersonaTopicSlugs(t *testing.T) {
+	p := Persona{AgentID: NewID(), Version: 1, Instructions: "Discuss Go tradeoffs.", CreatedAt: time.Now().UTC()}
+	for _, tag := range []string{"a", "go_123", "_", "0123456789", strings.Repeat("a", 64)} {
+		p.TopicTags = []string{tag}
+		if err := p.Validate(); err != nil {
+			t.Errorf("valid tag %q: %v", tag, err)
+		}
+	}
+	for _, tag := range []string{"", " ", "go lang", "go-lang", "go.lang", "#go", "Go", " go", "go ", "café", "🚀", "go\x00", "\xff", strings.Repeat("a", 65)} {
+		p.TopicTags = []string{tag}
+		if err := p.Validate(); err == nil {
+			t.Errorf("accepted invalid topic slug %q", tag)
+		}
+	}
+}
+
 func TestAgentSettingsValidation(t *testing.T) {
 	now := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
 	s := AgentSettings{AgentID: NewID(), PersonaVersion: 1, Policy: testGenerationPolicy(), UpdatedAt: now}

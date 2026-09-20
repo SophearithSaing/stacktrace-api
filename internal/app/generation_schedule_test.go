@@ -49,6 +49,23 @@ func TestGenerationScheduleDST(t *testing.T) {
 	}
 }
 
+func TestGenerationLocalDayBounds(t *testing.T) {
+	for _, tt := range []struct{ zone, now, start, end string }{
+		{"America/Sao_Paulo", "2018-11-04T12:00:00Z", "2018-11-04T03:00:00Z", "2018-11-05T02:00:00Z"},
+		{"America/New_York", "2026-03-08T12:00:00Z", "2026-03-08T05:00:00Z", "2026-03-09T04:00:00Z"},
+		{"America/New_York", "2026-11-01T12:00:00Z", "2026-11-01T04:00:00Z", "2026-11-02T05:00:00Z"},
+	} {
+		location, err := time.LoadLocation(tt.zone)
+		if err != nil {
+			t.Fatal(err)
+		}
+		start, end := GenerationLocalDayBounds(scheduleTime(tt.now), location)
+		if !start.Equal(scheduleTime(tt.start)) || !end.Equal(scheduleTime(tt.end)) {
+			t.Fatalf("%s: %v - %v", tt.zone, start, end)
+		}
+	}
+}
+
 func TestGenerationScheduleRestartAndZero(t *testing.T) {
 	s := scheduleSettings()
 	now := scheduleTime("2026-09-20T08:00:00Z")

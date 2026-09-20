@@ -15,6 +15,16 @@ type ScheduledSlot struct {
 // GenerationInstant is the precision used by PostgreSQL and stable slot keys.
 func GenerationInstant(at time.Time) time.Time { return at.UTC().Truncate(time.Microsecond) }
 
+// GenerationLocalDayBounds resolves midnight with the same explicit DST rules
+// as active hours. time.Date alone can choose the previous day when midnight is
+// nonexistent (for example Sao Paulo's historical spring-forward transition).
+func GenerationLocalDayBounds(at time.Time, location *time.Location) (time.Time, time.Time) {
+	date := at.In(location).Format(time.DateOnly)
+	calendar, _ := time.Parse(time.DateOnly, date)
+	nextDate := calendar.AddDate(0, 0, 1).Format(time.DateOnly)
+	return generationBoundary(date, "00:00", location), generationBoundary(nextDate, "00:00", location)
+}
+
 // AdvanceGenerationSchedule is pure apart from the explicitly supplied draw
 // function (the contract of rand.Int64N). Persist its returned settings together
 // with any admission under the settings lock. A dated zero remaining count is a

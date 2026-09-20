@@ -46,7 +46,7 @@ cleanup() {
     elif [[ $result != 0 ]]; then
         echo "Command failed (status $result). Diagnostics: $state" >&2
         if [[ $disposable == 1 && $cleanup_failed == 0 ]]; then
-            rm -f "$state/password" "$state/csrf-key" "$state/cursor-key" "$state/server" "$state/server.next" "$state/db"
+            rm -f "$state/password" "$state/csrf-key" "$state/cursor-key" "$state/server" "$state/server.next" "$state/db" "$state/worker"
         fi
     fi
     exit "$result"
@@ -92,12 +92,15 @@ if [[ $command == dev-up || $command == smoke ]]; then
     run go build -o "$state/server.next" ./cmd/server
     run go build -o "$state/db" ./cmd/db
 fi
+if [[ $command == smoke ]]; then run go build -o "$state/worker" ./cmd/worker; fi
 start_database
 
 case "$command" in
     dev-up|smoke)
         run "$state/db" migrate
+        if [[ $command == smoke ]]; then run "$state/worker" check; fi
         run "$state/db" seed
+        if [[ $command == smoke ]]; then run "$state/worker" check; fi
         stop_process api
         mv "$state/server.next" "$state/server"
         if [[ $command == smoke ]]; then

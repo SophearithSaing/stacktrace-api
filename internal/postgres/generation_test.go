@@ -44,7 +44,7 @@ func generationSetup(t *testing.T) (*Store, app.Persona, app.GenerationJob) {
 	}
 	id := app.NewID()
 	job := app.GenerationJob{ID: id, AgentID: agentID, PersonaVersion: 1, TriggerKind: app.TriggerScheduled, TriggerKey: "scheduled:2026-09-20:1",
-		OutputKind: app.OutputPost, RootJobID: id, Status: app.JobPending, AvailableAt: now, ExpiresAt: now.Add(time.Hour), CreatedAt: now}
+		OutputKind: app.OutputPost, RootJobID: id, MaxChainDepth: 2, MaxChainJobs: 5, Status: app.JobPending, AvailableAt: now, ExpiresAt: now.Add(time.Hour), CreatedAt: now}
 	if err := store.CreateGenerationJob(ctx, job); err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestGenerationStoreRoundTripAndInitialization(t *testing.T) {
 		t.Fatalf("persona round trip: %+v %v", savedPersona, err)
 	}
 	savedJob, err := store.GenerationJobByID(ctx, job.ID)
-	if err != nil || savedJob.ID != job.ID || savedJob.TriggerKey != job.TriggerKey || !savedJob.ExpiresAt.Equal(job.ExpiresAt) || savedJob.Status != app.JobPending {
+	if err != nil || savedJob.ID != job.ID || savedJob.TriggerKey != job.TriggerKey || !savedJob.ExpiresAt.Equal(job.ExpiresAt) || savedJob.Status != app.JobPending || savedJob.MaxChainDepth != job.MaxChainDepth || savedJob.MaxChainJobs != job.MaxChainJobs {
 		t.Fatalf("job round trip: %+v %v", savedJob, err)
 	}
 	persona.Instructions = "Do not overwrite me"

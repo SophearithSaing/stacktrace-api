@@ -162,3 +162,32 @@ func TestGenerationScheduleLocalDateAndFallSpacing(t *testing.T) {
 		t.Fatalf("backwards clock rerolled: %+v %v", due, err)
 	}
 }
+
+func TestGenerationSchedulePauseExpiryAndIncompleteState(t *testing.T) {
+	s := scheduleSettings()
+	s.Enabled = false
+	now := scheduleTime("2026-09-20T12:00:00Z")
+	unchanged, due, err := AdvanceGenerationSchedule(s, now, nil)
+	if err != nil || due != nil || !reflect.DeepEqual(unchanged, s) {
+		t.Fatalf("disabled schedule changed: %+v %v", unchanged, err)
+	}
+	s.Enabled, s.ScheduleDate, s.RemainingSlots = true, "2026-09-20", 1
+	if _, _, err := AdvanceGenerationSchedule(s, now, nil); err == nil {
+		t.Fatal("rerolled incomplete persisted state")
+	}
+	at := now.Add(-time.Duration(s.Policy.SourceMaxAgeSeconds) * time.Second)
+	s.NextPostAt = &at
+	s, due, err = AdvanceGenerationSchedule(s, now, nil)
+	if err != nil || due != nil || s.RemainingSlots != 0 || s.NextPostAt != nil {
+		t.Fatalf("expiry must be exclusive: %+v %+v %v", s, due, err)
+	}
+	// An active window entirely inside the spring gap collapses to zero real
+	// duration. Persist an exhausted day, never move it to a different local day.
+	s = scheduleSettings()
+	s.Policy.Timezone, s.Policy.ActiveStart, s.Policy.ActiveEnd = "America/New_York", "02:00", "02:45"
+	s.Policy.ScheduledMinPerDay, s.Policy.ScheduledMaxPerDay = 1, 1
+	s, due, err = AdvanceGenerationSchedule(s, scheduleTime("2026-03-08T05:00:00Z"), nil)
+	if err != nil || due != nil || s.RemainingSlots != 0 || s.ScheduleDate != "2026-03-08" {
+		t.Fatalf("collapsed day: %+v %+v %v", s, due, err)
+	}
+}

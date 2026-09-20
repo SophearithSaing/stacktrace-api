@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"math/rand/v2"
@@ -212,6 +213,17 @@ func (q *Queries) scheduleGenerationAgent(ctx context.Context, agentID app.ID, n
 		return result, databaseError(ctx, err)
 	}
 	if reserved >= settings.Policy.ScheduledPostCapPerDay {
+		result.SlotsDenied = 1
+		return result, nil
+	}
+	// Daily rollover must not reset minimum spacing. Retained reservations also
+	// cover a previous day's queued/cancelled post before publication exists.
+	var lastReserved sql.NullTime
+	if err := q.queryer.QueryRowContext(ctx, `SELECT (SELECT created_at FROM generation_jobs
+		WHERE agent_id=$1 AND output_kind='post' ORDER BY created_at DESC LIMIT 1)`, agentID).Scan(&lastReserved); err != nil {
+		return result, databaseError(ctx, err)
+	}
+	if lastReserved.Valid && clock.Before(lastReserved.Time.Add(time.Duration(settings.Policy.MinSpacingSeconds)*time.Second)) {
 		result.SlotsDenied = 1
 		return result, nil
 	}

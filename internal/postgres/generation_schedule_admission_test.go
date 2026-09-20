@@ -134,3 +134,63 @@ func TestGenerationScheduleStaleSlotAndOldDay(t *testing.T) {
 		t.Fatalf("backlog appeared: %+v", settings)
 	}
 }
+
+func TestGenerationScheduleSpacingAcrossLocalRollover(t *testing.T) {
+	store := schedulingStore(t)
+	settings := schedulingSettings()
+	settings.Policy.ActiveStart, settings.Policy.ActiveEnd = "00:00", "23:59"
+	schedulingAdd(t, store, settings)
+	now := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
+	created := now.Add(-30 * time.Minute)
+	id := app.NewID()
+	job := app.GenerationJob{ID: id, AgentID: settings.AgentID, PersonaVersion: 1, TriggerKind: app.TriggerScheduled,
+		TriggerKey: "previous-day-slot", OutputKind: app.OutputPost, RootJobID: id, MaxChainDepth: 0, MaxChainJobs: 1,
+		Status: app.JobPending, CreatedAt: created, AvailableAt: created, ExpiresAt: created.Add(time.Hour)}
+	if err := store.CreateGenerationJob(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	generationSQL(t, store, `UPDATE generation_jobs SET status='cancelled',reason_code='cancelled',finished_at=created_at WHERE id=$1`, id)
+	result, err := store.scheduleGeneration(context.Background(), &now, schedulingDraw)
+	if err != nil || result.JobsEnqueued != 0 || result.SlotsDenied != 1 {
+		t.Fatalf("local rollover reset spacing: %+v %v", result, err)
+	}
+	saved := schedulingRead(t, store, settings.AgentID)
+	if saved.RemainingSlots != 2 || saved.ScheduleDate != "2026-09-21" || !saved.NextPostAt.Equal(now.Add(time.Hour)) {
+		t.Fatalf("spacing denial did not advance: %+v", saved)
+	}
+	now = *saved.NextPostAt
+	result, err = store.scheduleGeneration(context.Background(), &now, schedulingDraw)
+	if err != nil || result.JobsEnqueued != 1 {
+		t.Fatalf("spaced slot denied: %+v %v", result, err)
+	}
+}
+
+func TestGenerationScheduleConflictCommitsProgress(t *testing.T) {
+	store := schedulingStore(t)
+	settings := schedulingSettings()
+	schedulingAdd(t, store, settings)
+	now := schedulingTime()
+	key, _ := app.ScheduledGenerationKey(now)
+	id := app.NewID()
+	// A trusted older enqueue already reserved this key. Its created_at is
+	// exactly one spacing ago, so admission reaches ON CONFLICT, not a quota or
+	// spacing denial. Availability/expiry/key retain their immutable slot values.
+	job := app.GenerationJob{ID: id, AgentID: settings.AgentID, PersonaVersion: 1, TriggerKind: app.TriggerScheduled,
+		TriggerKey: key, OutputKind: app.OutputPost, RootJobID: id, MaxChainDepth: 0, MaxChainJobs: 1,
+		Status: app.JobPending, CreatedAt: now.Add(-time.Hour), AvailableAt: now, ExpiresAt: now.Add(time.Hour)}
+	if err := store.CreateGenerationJob(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.scheduleGeneration(context.Background(), &now, schedulingDraw)
+	if err != nil || result.JobsEnqueued != 0 || result.SlotsDenied != 1 {
+		t.Fatalf("conflict aborted transaction: %+v %v", result, err)
+	}
+	saved := schedulingRead(t, store, settings.AgentID)
+	if saved.RemainingSlots != 2 || saved.NextPostAt == nil || !saved.NextPostAt.Equal(now.Add(time.Hour)) {
+		t.Fatalf("conflict rolled back progress: %+v", saved)
+	}
+	stored := schedulingJob(t, store, settings.AgentID)
+	if stored.ID != id || !stored.CreatedAt.Equal(job.CreatedAt) || !stored.ExpiresAt.Equal(job.ExpiresAt) || stored.MaxChainJobs != 1 {
+		t.Fatalf("conflict changed identity: %+v", stored)
+	}
+}

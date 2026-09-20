@@ -207,8 +207,8 @@ func TestGenerationScheduleDowntimeAndDuplicate(t *testing.T) {
 	if err != nil || result.JobsEnqueued != 0 {
 		t.Fatalf("repeated pass burst: %+v %v", result, err)
 	}
-	// Simulate an already-reserved immutable slot with schedule progress behind
-	// it. Idempotent conflict must advance, not abort or extend original expiry.
+	// Simulate schedule progress behind an already-reserved slot. Replay must
+	// advance, not abort or extend original expiry, even when spacing denies it.
 	previous := at.Add(5 * time.Hour)
 	generationSQL(t, store, `UPDATE agent_settings SET next_post_at=$2,remaining_slots=3 WHERE agent_id=$1`, settings.AgentID, previous)
 	result, err = store.scheduleGeneration(context.Background(), &now, schedulingDraw)

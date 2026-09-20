@@ -8,7 +8,7 @@ import (
 func testGenerationJob() GenerationJob {
 	now := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
 	id := NewID()
-	return GenerationJob{ID: id, AgentID: NewID(), PersonaVersion: 1, TriggerKind: TriggerScheduled, TriggerKey: "scheduled:2026-09-20:1", OutputKind: OutputPost, RootJobID: id, Status: JobPending, AvailableAt: now, ExpiresAt: now.Add(time.Hour), CreatedAt: now}
+	return GenerationJob{ID: id, AgentID: NewID(), PersonaVersion: 1, TriggerKind: TriggerScheduled, TriggerKey: "scheduled:2026-09-20:1", OutputKind: OutputPost, RootJobID: id, MaxChainDepth: 2, MaxChainJobs: 5, Status: JobPending, AvailableAt: now, ExpiresAt: now.Add(time.Hour), CreatedAt: now}
 }
 
 func testRunningJob() GenerationJob {
@@ -28,6 +28,11 @@ func TestGenerationJobStructure(t *testing.T) {
 		"id":                    func(j *GenerationJob) { j.ID = "bad" },
 		"root":                  func(j *GenerationJob) { j.RootJobID = NewID() },
 		"depth":                 func(j *GenerationJob) { j.ChainDepth = -1 },
+		"negative max depth":    func(j *GenerationJob) { j.MaxChainDepth = -1 },
+		"max depth ceiling":     func(j *GenerationJob) { j.MaxChainDepth = 11 },
+		"zero chain jobs":       func(j *GenerationJob) { j.MaxChainJobs = 0 },
+		"chain jobs ceiling":    func(j *GenerationJob) { j.MaxChainJobs = 101 },
+		"depth needs root":      func(j *GenerationJob) { j.MaxChainJobs = j.MaxChainDepth },
 		"persona":               func(j *GenerationJob) { j.PersonaVersion = 0 },
 		"status":                func(j *GenerationJob) { j.Status = "other" },
 		"trigger":               func(j *GenerationJob) { j.TriggerKind = "other" },
@@ -69,6 +74,61 @@ func TestGenerationJobStructure(t *testing.T) {
 		if err := j.Validate(); err == nil {
 			t.Fatalf("%s lost durable actor", trigger)
 		}
+	}
+}
+
+func TestGenerationChainLimits(t *testing.T) {
+	root := testGenerationJob()
+	child := root
+	child.ID, child.AgentID = NewID(), NewID()
+	child.TriggerKind, child.OutputKind, child.ChainDepth = TriggerContinuation, OutputReply, 1
+	post := NewID()
+	child.SourcePostID, child.TriggerActorID, child.CooldownKey = &post, &root.AgentID, "cooldown"
+	if err := ValidateGenerationContinuation(root, root, child); err != nil {
+		t.Fatal(err)
+	}
+	for name, change := range map[string]func(*GenerationJob){
+		"expanded jobs":          func(j *GenerationJob) { j.MaxChainJobs++ },
+		"expanded depth":         func(j *GenerationJob) { j.MaxChainDepth++ },
+		"narrowed snapshot":      func(j *GenerationJob) { j.MaxChainJobs-- },
+		"different root":         func(j *GenerationJob) { j.RootJobID = NewID() },
+		"skipped parent":         func(j *GenerationJob) { j.ChainDepth = 2 },
+		"depth exceeds snapshot": func(j *GenerationJob) { j.ChainDepth = 3 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := child
+			change(&changed)
+			if ValidateGenerationContinuation(root, root, changed) == nil {
+				t.Fatal("accepted invalid inheritance")
+			}
+		})
+	}
+	grandchild := child
+	grandchild.ID, grandchild.ChainDepth = NewID(), 2
+	if err := ValidateGenerationContinuation(root, child, grandchild); err != nil {
+		t.Fatal(err)
+	}
+	parent := child
+	parent.MaxChainJobs++
+	if ValidateGenerationContinuation(root, parent, grandchild) == nil {
+		t.Fatal("accepted parent with changed root limits")
+	}
+	// Mutable settings are intentionally not inputs to lineage validation.
+	for _, limits := range []struct{ depth, jobs int }{{3, 5}, {2, 6}, {1, 4}} {
+		after := root
+		after.MaxChainDepth, after.MaxChainJobs = limits.depth, limits.jobs
+		after.Status, after.ReasonCode, after.FinishedAt = JobCancelled, "cancelled", &root.CreatedAt
+		if ValidateGenerationJobTransition(root, after, 0, root.CreatedAt, nil) == nil {
+			t.Fatal("mutated root limits during transition")
+		}
+	}
+	root.MaxChainDepth, root.MaxChainJobs = 0, 1
+	if err := root.Validate(); err != nil {
+		t.Fatal("root-only chain should be valid", err)
+	}
+	child.MaxChainDepth, child.MaxChainJobs = 0, 1
+	if child.Validate() == nil {
+		t.Fatal("continued root-only chain")
 	}
 }
 

@@ -38,19 +38,24 @@ const (
 )
 
 type GenerationJob struct {
-	ID                 ID
-	AgentID            ID
-	PersonaVersion     int
-	TriggerKind        GenerationTrigger
-	TriggerKey         string
-	TriggerActorID     *ID
-	CooldownKey        string
-	SourcePostID       *ID
-	SourceReplyID      *ID
-	SourceRepostID     *ID
-	OutputKind         GenerationOutput
-	RootJobID          ID
-	ChainDepth         int
+	ID             ID
+	AgentID        ID
+	PersonaVersion int
+	TriggerKind    GenerationTrigger
+	TriggerKey     string
+	TriggerActorID *ID
+	CooldownKey    string
+	SourcePostID   *ID
+	SourceReplyID  *ID
+	SourceRepostID *ID
+	OutputKind     GenerationOutput
+	RootJobID      ID
+	ChainDepth     int
+	// Root policy snapshots, inherited exactly by every child. A responding
+	// agent's current stricter policy is an additional admission limit, never a
+	// reason to mutate these or expand the root's allowance.
+	MaxChainDepth      int
+	MaxChainJobs       int
 	Status             GenerationJobStatus
 	AvailableAt        time.Time
 	ExpiresAt          time.Time
@@ -75,6 +80,9 @@ func (j GenerationJob) Validate() error {
 	}
 	if !validGenerationText(j.TriggerKey, 256) || j.ChainDepth < 0 || j.ChainDepth > 10 || (j.ChainDepth == 0) != (j.RootJobID == j.ID) {
 		return fmt.Errorf("invalid trigger key or chain identity")
+	}
+	if j.MaxChainDepth < 0 || j.MaxChainDepth > 10 || j.MaxChainJobs < 1 || j.MaxChainJobs > 100 || j.MaxChainDepth >= j.MaxChainJobs || j.ChainDepth > j.MaxChainDepth {
+		return fmt.Errorf("invalid immutable chain limits")
 	}
 	if j.OutputKind != OutputPost && j.OutputKind != OutputQuote && j.OutputKind != OutputReply {
 		return fmt.Errorf("invalid output kind")
@@ -276,7 +284,27 @@ func sameGenerationJobIdentity(a, b GenerationJob) bool {
 		sameGenerationID(a.SourcePostID, b.SourcePostID) && sameGenerationID(a.SourceReplyID, b.SourceReplyID) &&
 		sameGenerationID(a.SourceRepostID, b.SourceRepostID) && a.OutputKind == b.OutputKind &&
 		a.RootJobID == b.RootJobID && a.ChainDepth == b.ChainDepth &&
+		a.MaxChainDepth == b.MaxChainDepth && a.MaxChainJobs == b.MaxChainJobs &&
 		a.ExpiresAt.Equal(b.ExpiresAt) && a.CreatedAt.Equal(b.CreatedAt)
+}
+
+// ValidateGenerationContinuation checks lineage and exact root-limit inheritance.
+// Admission must additionally lock the root and reserve total chain capacity,
+// counting every retained job regardless of outcome, and apply the child's own
+// conservative policy limits. This pure check does not reserve that capacity.
+func ValidateGenerationContinuation(root, parent, child GenerationJob) error {
+	for _, job := range []GenerationJob{root, parent, child} {
+		if err := job.Validate(); err != nil {
+			return err
+		}
+	}
+	if root.ChainDepth != 0 || parent.RootJobID != root.ID || child.RootJobID != root.ID || child.TriggerKind != TriggerContinuation || child.ChainDepth != parent.ChainDepth+1 {
+		return fmt.Errorf("invalid continuation lineage")
+	}
+	if parent.MaxChainDepth != root.MaxChainDepth || parent.MaxChainJobs != root.MaxChainJobs || child.MaxChainDepth != root.MaxChainDepth || child.MaxChainJobs != root.MaxChainJobs {
+		return fmt.Errorf("continuations must inherit immutable root limits")
+	}
+	return nil
 }
 
 func sameGenerationID(a, b *ID) bool { return a == nil && b == nil || a != nil && b != nil && *a == *b }

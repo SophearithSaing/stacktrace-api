@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"strings"
@@ -87,7 +88,7 @@ func TestMigrateEmptyAndConcurrent(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&tableCount); err != nil || tableCount != len(catalog) {
 		t.Fatalf("history count=%d error=%v", tableCount, err)
 	}
-	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM information_schema.tables WHERE table_schema = current_schema()`).Scan(&tableCount); err != nil || tableCount != 13 {
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM information_schema.tables WHERE table_schema = current_schema()`).Scan(&tableCount); err != nil || tableCount != 17 {
 		t.Fatalf("table count=%d error=%v", tableCount, err)
 	}
 }
@@ -97,7 +98,7 @@ func TestSchemaCompatibility(t *testing.T) {
 		`UPDATE schema_migrations SET checksum = repeat('0', 64)`,
 		`UPDATE schema_migrations SET name = '001_changed.sql' WHERE version = 1`,
 		`INSERT INTO schema_migrations VALUES (99, '099_newer.sql', repeat('0',64), now())`,
-		`UPDATE schema_migrations SET version = 3 WHERE version = 1`,
+		`UPDATE schema_migrations SET version = 98 WHERE version = 1`,
 	} {
 		t.Run(mutation, func(t *testing.T) {
 			store := testStore(t)
@@ -125,7 +126,7 @@ func TestMigrationFailureRollsBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	catalog = append(catalog, migration{len(catalog) + 1, "003_broken.sql", strings.Repeat("0", 64), "CREATE TABLE partial_work (id integer); SELECT secret_invalid_sql"})
+	catalog = append(catalog, migration{len(catalog) + 1, fmt.Sprintf("%03d_broken.sql", len(catalog)+1), strings.Repeat("0", 64), "CREATE TABLE partial_work (id integer); SELECT secret_invalid_sql"})
 	if err := store.migrate(ctx, catalog); err == nil || strings.Contains(err.Error(), "secret_invalid_sql") {
 		t.Fatalf("expected a safe migration failure: %v", err)
 	}
@@ -163,6 +164,48 @@ func TestMigrateUpgradeFromIdentity(t *testing.T) {
 	var applied int
 	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil || applied != len(catalog) {
 		t.Fatalf("upgrade history count=%d error=%v", applied, err)
+	}
+}
+
+func TestMigrateUpgradeFromContent(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	catalog, err := loadMigrations(migrations.Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.migrate(ctx, catalog[:2]); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Ready(ctx); !errors.Is(err, ErrSchemaMismatch) {
+		t.Fatalf("old schema readiness = %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `
+		INSERT INTO accounts(id,type,handle,display_name,created_at,updated_at)
+		VALUES ('10000000-0000-0000-0000-000000000001','agent','retained_agent','Agent',now(),now());
+		INSERT INTO posts(id,author_id,body,created_at) VALUES
+		('20000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000001','retained post',now());
+		INSERT INTO replies(id,post_id,author_id,body,created_at) VALUES
+		('30000000-0000-0000-0000-000000000001','20000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000001','retained reply',now());
+		INSERT INTO reposts(id,post_id,account_id,created_at) VALUES
+		('40000000-0000-0000-0000-000000000001','20000000-0000-0000-0000-000000000001','10000000-0000-0000-0000-000000000001',now())`); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := store.Migrate(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Ready(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var post, reply string
+	var reposts, jobs, attempts int
+	if err := store.db.QueryRowContext(ctx, `SELECT p.body, r.body,
+		(SELECT count(*) FROM reposts), (SELECT count(*) FROM generation_jobs),
+		(SELECT count(*) FROM generation_attempts) FROM posts p JOIN replies r ON r.post_id=p.id`).Scan(
+		&post, &reply, &reposts, &jobs, &attempts); err != nil || post != "retained post" || reply != "retained reply" || reposts != 1 || jobs != 0 || attempts != 0 {
+		t.Fatalf("upgrade content/provenance = %q %q %d %d %d, error=%v", post, reply, reposts, jobs, attempts, err)
 	}
 }
 

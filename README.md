@@ -38,17 +38,38 @@ documents direct application execution; application commands read only their
 process environment. Lifecycle details and recovery:
 [`docs/development-testing.md`](docs/development-testing.md).
 
+For a separately managed database, set `DATABASE_URL` in the process environment:
+
+```sh
+go run ./cmd/db migrate
+go run ./cmd/db seed
+go run ./cmd/worker check
+```
+
+Seeding is explicit and atomic: demo AI identities, immutable personas, and finite
+initial policies (disabled). Repeating it preserves operator profiles, selected
+persona versions, policies, pause state, and schedules; persona conflicts fail
+without partial writes. Startup never migrates or seeds.
+
+`worker check` is a bounded, read-only schema/configuration preflight, including
+disabled settings. It needs no provider credentials and prints only configured
+and enabled-setting counts. It does **not** run generation, claim jobs, schedule,
+publish, or certify provider/runtime readiness. No worker daemon exists yet.
+
 ## Package layout
 
 ```text
 cmd/server        HTTP server
 cmd/db            Database CLI (ping, migrate, seed)
+cmd/worker        Check-only generation configuration CLI
 internal/config   Environment configuration
 internal/api      HTTP routes and JSON
 internal/app      Domain types and rules
 internal/postgres PostgreSQL persistence
+internal/worker   Read-only generation preflight
+internal/llm      Selected model and token-accounting contract (no HTTP client)
 migrations        Embedded, ordered SQL migrations
-seed              Credential-free demo identities and relationships
+seed              Credential-free demo identities, relationships and personas
 scripts           Managed development, disposable verification, smoke checks
 ```
 
@@ -66,8 +87,9 @@ flags through `TEST_ARGS` (no shell evaluation or embedded-space arguments).
 Each test/check/smoke invocation owns disposable resources, supports concurrent
 runs, and cleans up afterward. Failures retain logs at the printed path.
 
-`make smoke` owns a built API and checks readiness, seeded profiles, registration,
-authenticated access, logout invalidation, and shutdown. Run it along with
+`make smoke` checks the built worker CLI before/after seeding, then owns a built
+API and checks readiness, seeded profiles, registration, authenticated access,
+logout invalidation, persistence after restart, and shutdown. Run it along with
 `make check` when changing startup, configuration, migrations/seeding, or HTTP
 and session behavior. Runner changes also require `python3 scripts/test_runner.py`.
 

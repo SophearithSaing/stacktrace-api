@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"time"
 
@@ -13,23 +12,9 @@ import (
 // SeedDemo is an explicit operator command. Stable IDs make it repeatable,
 // while identity checks prevent adopting or overwriting existing accounts.
 func (s *Store) SeedDemo(ctx context.Context) error {
-	var fixture struct {
-		Accounts []struct {
-			ID          string `json:"id"`
-			Handle      string `json:"handle"`
-			DisplayName string `json:"display_name"`
-			Initials    string `json:"initials"`
-			Bio         string `json:"bio"`
-			RoleLabel   string `json:"role_label"`
-			Specialty   string `json:"specialty"`
-		} `json:"accounts"`
-		Follows []struct {
-			Follower string `json:"follower"`
-			Followed string `json:"followed"`
-		} `json:"follows"`
-	}
-	if err := json.Unmarshal(seed.Demo, &fixture); err != nil {
-		return errors.New("invalid demo fixture")
+	fixture, err := decodeDemoFixture(seed.Demo, seed.Personas)
+	if err != nil {
+		return err
 	}
 	return s.Transaction(ctx, func(q *Queries) error {
 		queryCtx, cancel := q.queryContext(ctx)
@@ -37,37 +22,48 @@ func (s *Store) SeedDemo(ctx context.Context) error {
 		if _, err := q.queryer.ExecContext(queryCtx, `SELECT pg_advisory_xact_lock(721305198)`); err != nil {
 			return databaseError(queryCtx, err)
 		}
-		ids := make(map[string]app.ID)
-		for _, row := range fixture.Accounts {
-			account, err := app.NewAccount(app.AccountAgent, row.Handle, row.DisplayName, time.Now())
-			if err != nil {
-				return err
-			}
-			account.ID, err = app.ParseID(row.ID)
-			if err != nil {
-				return err
-			}
-			account.Initials, account.Bio, account.RoleLabel, account.Specialty = row.Initials, row.Bio, row.RoleLabel, row.Specialty
-			existing, err := q.AccountByID(ctx, account.ID)
+		for _, account := range fixture.accounts {
+			var accountType app.AccountType
+			var handle string
+			var disabledAt *time.Time
+			// Keep identity and enablement stable through persona initialization.
+			err := databaseError(queryCtx, q.queryer.QueryRowContext(queryCtx,
+				`SELECT type,handle,disabled_at FROM accounts WHERE id=$1 FOR UPDATE`, account.ID).Scan(&accountType, &handle, &disabledAt))
 			if errors.Is(err, app.ErrNotFound) {
 				if err := q.CreateAccount(ctx, account); err != nil {
 					return err
 				}
 			} else if err != nil {
 				return err
-			} else if existing.Type != app.AccountAgent || existing.Handle != account.Handle || existing.DisabledAt != nil {
+			} else if accountType != app.AccountAgent || handle != account.Handle || disabledAt != nil {
 				return app.ErrConflict
 			}
-			ids[account.Handle] = account.ID
 		}
-		for _, row := range fixture.Follows {
-			follower, followed := ids[row.Follower], ids[row.Followed]
-			if follower == "" || followed == "" || follower == followed {
-				return errors.New("invalid demo relationship")
-			}
-			_, err := q.queryer.ExecContext(queryCtx, `INSERT INTO follows (follower_id, followed_id, created_at) VALUES ($1,$2,statement_timestamp()) ON CONFLICT DO NOTHING`, follower, followed)
+		for _, pair := range fixture.follows {
+			_, err := q.queryer.ExecContext(queryCtx, `INSERT INTO follows (follower_id, followed_id, created_at) VALUES ($1,$2,statement_timestamp()) ON CONFLICT DO NOTHING`, pair[0], pair[1])
 			if err != nil {
 				return databaseError(queryCtx, err)
+			}
+		}
+		for i, persona := range fixture.personas {
+			existing, err := q.PersonaByVersion(ctx, persona.AgentID, persona.Version)
+			if errors.Is(err, app.ErrNotFound) {
+				if err := q.CreatePersona(ctx, persona); err != nil {
+					return err
+				}
+			} else if err != nil {
+				return err
+			} else if app.ValidatePersonaUnchanged(existing, persona) != nil {
+				return app.ErrConflict
+			}
+			settings, err := q.InitializeAgentSettings(ctx, fixture.settings[i])
+			if err != nil {
+				return err
+			}
+			// An operator may have selected a newer version. Validate it, but never
+			// replace that selection (or the policy, pause state, or schedule).
+			if _, err := q.PersonaByVersion(ctx, settings.AgentID, settings.PersonaVersion); err != nil {
+				return err
 			}
 		}
 		return nil

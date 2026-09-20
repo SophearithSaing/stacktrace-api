@@ -332,6 +332,8 @@ class RunnerTests(unittest.TestCase):
                 output = result.result()
                 self.assertIn("Smoke passed", output)
                 self.assertIn("after API restart", output)
+                self.assertIn("Check-only configuration OK: configured=0 enabled=0; no generation executed", output)
+                self.assertIn("Check-only configuration OK: configured=2 enabled=0; no generation executed", output)
                 self.assertEqual(output.count("API ready:"), 2, output)
             tests = [
                 pool.submit(self.command, "make", "test", "TEST_ARGS=-run TestSeed -v")
@@ -361,6 +363,7 @@ class RunnerTests(unittest.TestCase):
             self.assertFalse(running(state / "api.pid"))
             self.assertFalse(running(state / "job.pid"))
             self.assertFalse((state / "password").exists())
+            self.assertFalse((state / "worker").exists())
             self.assert_database_removed(state)
             fixture = json.loads((state / "smoke-fixture.json").read_text())
             self.assertEqual(

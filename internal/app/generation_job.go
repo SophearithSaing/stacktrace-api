@@ -225,10 +225,11 @@ func ValidateGenerationJobTransition(before, after GenerationJob, expectedVersio
 				return fmt.Errorf("invalid failed job retry")
 			}
 		case JobRunning:
-			// A fenced cleanup may skip stale work even after both expiries;
-			// otherwise an expired lease must first be reclaimed.
+			// Fenced cleanup may cancel a removed repost without a live lease,
+			// or skip stale work after job expiry. Other actions need ownership.
 			staleCleanup := !now.Before(before.ExpiresAt) && after.Status == JobSkipped && after.ReasonCode == "stale_trigger"
-			if !now.Before(*before.LeaseExpiresAt) && !staleCleanup {
+			removedRepostCleanup := before.TriggerKind == TriggerRepost && before.SourceRepostID == nil && now.Before(before.ExpiresAt) && after.Status == JobCancelled && after.ReasonCode == "source_removed"
+			if !now.Before(*before.LeaseExpiresAt) && !staleCleanup && !removedRepostCleanup {
 				return fmt.Errorf("expired owner lease")
 			}
 			if after.Status != JobRunning && after.Status != JobRetryWait && after.Status != JobSucceeded && after.Status != JobSkipped && after.Status != JobCancelled && after.Status != JobFailed {

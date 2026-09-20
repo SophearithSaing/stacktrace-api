@@ -258,6 +258,87 @@ func TestGenerationRemovedRepost(t *testing.T) {
 	}
 }
 
+func TestGenerationRemovedRepostCleanup(t *testing.T) {
+	running := testRunningJob()
+	actor, source := NewID(), NewID()
+	running.TriggerKind, running.OutputKind = TriggerRepost, OutputReply
+	running.TriggerActorID, running.SourcePostID, running.CooldownKey = &actor, &source, "durable_scope"
+	// SourceRepostID was SET NULL while the job was running.
+	for _, now := range []time.Time{running.LeaseExpiresAt.Add(-time.Second), *running.LeaseExpiresAt, running.LeaseExpiresAt.Add(time.Second)} {
+		cancelled := running
+		cancelled.Status, cancelled.ReasonCode, cancelled.LeaseExpiresAt, cancelled.FinishedAt = JobCancelled, "source_removed", nil, &now
+		if err := ValidateGenerationJobTransition(running, cancelled, running.LeaseVersion, now, nil); err != nil {
+			t.Errorf("removed repost cleanup at %s: %v", now, err)
+		}
+		if err := ValidateGenerationJobTransition(running, cancelled, running.LeaseVersion+1, now, nil); err == nil {
+			t.Error("cleanup accepted mismatched lease version")
+		}
+		cancelled.ExpiresAt = cancelled.ExpiresAt.Add(time.Hour)
+		if err := ValidateGenerationJobTransition(running, cancelled, running.LeaseVersion, now, nil); err == nil {
+			t.Error("cleanup changed immutable expiry")
+		}
+	}
+	now := *running.LeaseExpiresAt
+	for _, change := range []func(*GenerationJob, *GenerationJob){
+		func(before, after *GenerationJob) {
+			id := NewID()
+			before.SourceRepostID, after.SourceRepostID = &id, &id
+		},
+		func(before, after *GenerationJob) {
+			before.TriggerKind, after.TriggerKind = TriggerHumanPost, TriggerHumanPost
+		},
+		func(before, after *GenerationJob) { after.ReasonCode = "operator_cancelled" },
+		func(before, after *GenerationJob) { after.AgentID = NewID() },
+		func(before, after *GenerationJob) { after.LeaseVersion++ },
+	} {
+		before, after := running, running
+		after.Status, after.ReasonCode, after.LeaseExpiresAt, after.FinishedAt = JobCancelled, "source_removed", nil, &now
+		change(&before, &after)
+		if err := ValidateGenerationJobTransition(before, after, running.LeaseVersion, now, nil); err == nil {
+			t.Error("cleanup authorized unrelated cancellation or changed identity/fence")
+		}
+	}
+	for _, status := range []GenerationJobStatus{JobRunning, JobRetryWait, JobSucceeded} {
+		after := running
+		after.Status = status
+		var attempt *GenerationAttempt
+		switch status {
+		case JobRunning:
+			leaseEnd := now.Add(time.Minute)
+			after.LeaseVersion++
+			after.LeaseExpiresAt = &leaseEnd
+		case JobRetryWait:
+			after.LeaseExpiresAt, after.ReasonCode, after.AvailableAt = nil, "retry", now
+		case JobSucceeded:
+			completed := testGenerationAttempt(running)
+			completed.Status, completed.FinishedAt = AttemptSucceeded, &now
+			attempt = &completed
+			result := NewID()
+			after.LeaseExpiresAt, after.FinishedAt, after.ResultReplyID, after.PublishedAttemptID = nil, &now, &result, &completed.ID
+		}
+		if err := after.Validate(); err != nil {
+			t.Fatalf("invalid %s test setup: %v", status, err)
+		}
+		if err := ValidateGenerationJobTransition(running, after, running.LeaseVersion, now, attempt); err == nil {
+			t.Errorf("removed repost cleanup permitted %s", status)
+		}
+	}
+	for _, now := range []time.Time{running.ExpiresAt, running.ExpiresAt.Add(time.Second)} {
+		after := running
+		after.Status, after.ReasonCode, after.LeaseExpiresAt, after.FinishedAt = JobCancelled, "source_removed", nil, &now
+		if err := ValidateGenerationJobTransition(running, after, running.LeaseVersion, now, nil); err == nil {
+			t.Error("cancelled expired job instead of skipping stale trigger")
+		}
+		after.Status, after.ReasonCode = JobSkipped, "stale_trigger"
+		if err := ValidateGenerationJobTransition(running, after, running.LeaseVersion, now, nil); err != nil {
+			t.Errorf("stale removed repost cleanup: %v", err)
+		}
+		if err := ValidateGenerationJobTransition(running, after, running.LeaseVersion+1, now, nil); err == nil {
+			t.Error("stale cleanup accepted mismatched lease version")
+		}
+	}
+}
+
 func TestGenerationJobTimingBoundaries(t *testing.T) {
 	running := testRunningJob()
 	running.AvailableAt = *running.LeaseExpiresAt

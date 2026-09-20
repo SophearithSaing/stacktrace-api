@@ -41,7 +41,7 @@ func run(ctx context.Context, args []string) error {
 		if err := store.SeedDemo(ctx); err != nil {
 			return err
 		}
-		fmt.Fprintln(os.Stdout, "Demo identities and relationships seeded")
+		fmt.Fprintln(os.Stdout, "Demo identities, relationships, personas and initial settings seeded (existing settings preserved)")
 		return nil
 	}
 	if args[0] == "migrate" {

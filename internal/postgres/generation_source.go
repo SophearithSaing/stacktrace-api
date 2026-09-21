@@ -13,6 +13,7 @@ type generationSource struct {
 	kind                                app.GenerationTrigger
 	action, actor, post, priorityAuthor app.ID
 	reply, repost                       *app.ID
+	quoted                              *app.ID
 	body                                string
 	created                             time.Time
 }
@@ -66,6 +67,7 @@ func (q *Queries) generationSocialSource(ctx context.Context, kind app.Generatio
 	if deleted != nil {
 		return source, app.ErrDeleted
 	}
+	source.quoted = quoted
 	source.priorityAuthor = source.actor
 	switch kind {
 	case app.TriggerReply:

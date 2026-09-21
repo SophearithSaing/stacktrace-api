@@ -86,9 +86,17 @@ func (q *Queries) admitGenerationSource(ctx context.Context, source generationSo
 	if err != nil {
 		return 0, app.ErrUnavailable
 	}
+	priorActionJobs := 0
+	if parent != nil {
+		// Unlike fresh human hooks, this trusted primitive can be retried. The
+		// root index bounds this history by the immutable <=100-job chain limit.
+		if err := q.queryer.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT 1 FROM generation_jobs WHERE root_job_id=$1 AND trigger_key=$2 LIMIT $3) reserved`, root.ID, key, actionCap).Scan(&priorActionJobs); err != nil {
+			return 0, databaseError(ctx, err)
+		}
+	}
 	enqueued := 0
 	for _, candidate := range eligible {
-		if enqueued >= actionCap || parent == nil && humanJobs >= humanCap {
+		if enqueued+priorActionJobs >= actionCap || parent == nil && humanJobs >= humanCap {
 			break
 		}
 		s := candidate.settings

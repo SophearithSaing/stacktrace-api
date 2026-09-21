@@ -67,8 +67,19 @@ func (s *Store) SetRepost(ctx context.Context, sessionHash string, postID app.ID
 		queryCtx, cancel := q.queryContext(ctx)
 		defer cancel()
 		if desired {
-			_, err = q.queryer.ExecContext(queryCtx, `INSERT INTO reposts(id,account_id,post_id,created_at)
-				VALUES($1,$2,$3,statement_timestamp()) ON CONFLICT(account_id,post_id) DO NOTHING`, app.NewID(), actor, parsedPostID)
+			id := app.NewID()
+			result, insertErr := q.queryer.ExecContext(queryCtx, `INSERT INTO reposts(id,account_id,post_id,created_at)
+				VALUES($1,$2,$3,statement_timestamp()) ON CONFLICT(account_id,post_id) DO NOTHING`, id, actor, parsedPostID)
+			if insertErr != nil {
+				return databaseError(queryCtx, insertErr)
+			}
+			count, countErr := result.RowsAffected()
+			if countErr != nil {
+				return databaseError(queryCtx, countErr)
+			}
+			if count == 1 {
+				return q.enqueueSocialGeneration(ctx, app.TriggerRepost, id, actor)
+			}
 		} else {
 			_, err = q.queryer.ExecContext(queryCtx, `DELETE FROM reposts WHERE account_id=$1 AND post_id=$2`, actor, parsedPostID)
 		}

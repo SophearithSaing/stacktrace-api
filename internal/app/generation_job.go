@@ -185,6 +185,33 @@ func (j GenerationJob) ValidateLease(expectedVersion int64, now time.Time) error
 	return nil
 }
 
+// ValidateGenerationSourceInvalidation is a separate trusted cleanup contract.
+// The caller must prove source invalidity under source/job locks; an expired
+// owner lease cannot keep removed content eligible. This does not authorize
+// ordinary owner cancellation, retry, spend or publication without a live lease.
+func ValidateGenerationSourceInvalidation(before, after GenerationJob, expectedVersion int64, now time.Time) error {
+	if err := before.Validate(); err != nil {
+		return err
+	}
+	if err := after.Validate(); err != nil {
+		return err
+	}
+	if before.SourcePostID == nil || (before.Status != JobPending && before.Status != JobRetryWait && before.Status != JobRunning) {
+		return fmt.Errorf("source invalidation requires active social work")
+	}
+	if !sameGenerationJobIdentity(before, after) || expectedVersion != before.LeaseVersion || after.LeaseVersion != before.LeaseVersion || after.LeaseExpiresAt != nil || !after.AvailableAt.Equal(before.AvailableAt) || now.Before(before.CreatedAt) || after.FinishedAt == nil || !after.FinishedAt.Equal(now) {
+		return fmt.Errorf("invalid source cleanup identity or fence")
+	}
+	status, reason := JobCancelled, "source_removed"
+	if !now.Before(before.ExpiresAt) {
+		status, reason = JobSkipped, "stale_trigger"
+	}
+	if after.Status != status || after.ReasonCode != reason {
+		return fmt.Errorf("invalid source cleanup outcome")
+	}
+	return nil
+}
+
 // ValidateGenerationJobTransition is a pure lifecycle contract, not a claim or
 // publication operation. Callers must lock/fence storage and recheck policy,
 // source visibility, quotas and content in the eventual publication transaction.

@@ -82,6 +82,11 @@ func (s *Store) SetRepost(ctx context.Context, sessionHash string, postID app.ID
 			}
 		} else {
 			_, err = q.queryer.ExecContext(queryCtx, `DELETE FROM reposts WHERE account_id=$1 AND post_id=$2`, actor, parsedPostID)
+			if err != nil {
+				return databaseError(queryCtx, err)
+			}
+			_, err = q.cancelRemovedGenerationSourceJobs(ctx, parsedPostID)
+			return err
 		}
 		return databaseError(queryCtx, err)
 	})

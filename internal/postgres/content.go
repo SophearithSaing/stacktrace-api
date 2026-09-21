@@ -301,7 +301,11 @@ func (s *Store) DeletePost(ctx context.Context, sessionHash string, id app.ID) e
 			return app.ErrForbidden
 		}
 		_, err = q.queryer.ExecContext(queryCtx, `UPDATE posts SET deleted_at=statement_timestamp() WHERE id=$1`, parsed)
-		return databaseError(queryCtx, err)
+		if err != nil {
+			return databaseError(queryCtx, err)
+		}
+		_, err = q.cancelRemovedGenerationSourceJobs(ctx, parsed)
+		return err
 	})
 }
 
@@ -340,6 +344,10 @@ func (s *Store) DeleteReply(ctx context.Context, sessionHash string, id app.ID) 
 			return app.ErrForbidden
 		}
 		_, err = q.queryer.ExecContext(queryCtx, `UPDATE replies SET deleted_at=statement_timestamp() WHERE id=$1`, parsed)
-		return databaseError(queryCtx, err)
+		if err != nil {
+			return databaseError(queryCtx, err)
+		}
+		_, err = q.cancelRemovedGenerationSourceJobs(ctx, parent)
+		return err
 	})
 }

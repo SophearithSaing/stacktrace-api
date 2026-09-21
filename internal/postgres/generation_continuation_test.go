@@ -138,8 +138,8 @@ func TestGenerationContinuationImmutableAndChildLimits(t *testing.T) {
 				case "child_depth":
 					p.MaxChainDepth = 0
 				case "child_jobs":
-					p.MaxChainDepth = 0
-					p.MaxChainJobs = 1
+					p.MaxChainDepth = 1
+					p.MaxChainJobs = 2
 				case "action_retry":
 					p.MaxAgentsPerTrigger = 1
 				}
@@ -153,9 +153,23 @@ func TestGenerationContinuationImmutableAndChildLimits(t *testing.T) {
 			if scenario == "action_retry" {
 				depth, jobs = 2, 4
 			}
+			if scenario == "child_jobs" {
+				depth, jobs = 2, 5
+			}
 			parent := continuationPending(t, store, actor.AgentID, depth, jobs)
 			if err := store.Transaction(context.Background(), func(q *Queries) error { return continuationPublish(q, parent, "@first_child @second_child") }); err != nil {
 				t.Fatal(err)
+			}
+			if scenario == "child_jobs" {
+				published, err := store.GenerationJobByID(context.Background(), parent.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				id := app.NewID()
+				history := app.GenerationJob{ID: id, AgentID: second.AgentID, PersonaVersion: 1, TriggerKind: app.TriggerContinuation, TriggerKey: string(id), TriggerActorID: &actor.AgentID, CooldownKey: string(id), SourcePostID: published.ResultPostID, OutputKind: app.OutputReply, RootJobID: parent.ID, ChainDepth: 1, MaxChainDepth: 2, MaxChainJobs: 5, Status: app.JobPending, CreatedAt: parent.CreatedAt, AvailableAt: parent.AvailableAt, ExpiresAt: parent.ExpiresAt}
+				if err := store.CreateGenerationJob(context.Background(), history); err != nil {
+					t.Fatal(err)
+				}
 			}
 			generationSQL(t, store, `UPDATE agent_settings SET policy=jsonb_set(jsonb_set(policy,'{max_chain_jobs}','100'),'{max_chain_depth}','10') WHERE agent_id=$1`, actor.AgentID)
 			count, err := continuationRun(store, parent.ID)
@@ -269,6 +283,46 @@ func TestGenerationContinuationRejectsInvalidSource(t *testing.T) {
 			}
 			if len(socialJobs(t, store)) != 1 {
 				t.Fatal("invalid source enqueued")
+			}
+		})
+	}
+}
+
+func TestGenerationContinuationDepthBoundary(t *testing.T) {
+	for _, limit := range []string{"root", "child"} {
+		t.Run(limit, func(t *testing.T) {
+			store := schedulingStore(t)
+			rootAgent := socialAgent(t, store, "depth_root", nil)
+			parentAgent := socialAgent(t, store, "depth_parent", nil)
+			socialAgent(t, store, "depth_child", func(p *app.GenerationPolicy) {
+				if limit == "child" {
+					p.MaxChainDepth = 1
+				}
+			})
+			depth := 5
+			if limit == "root" {
+				depth = 1
+			}
+			root := continuationPending(t, store, rootAgent.AgentID, depth, 6)
+			if err := store.Transaction(context.Background(), func(q *Queries) error { return continuationPublish(q, root, "root") }); err != nil {
+				t.Fatal(err)
+			}
+			root, err := store.GenerationJobByID(context.Background(), root.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := app.NewID()
+			parent := app.GenerationJob{ID: id, AgentID: parentAgent.AgentID, PersonaVersion: 1, TriggerKind: app.TriggerContinuation, TriggerKey: string(id), TriggerActorID: &rootAgent.AgentID, CooldownKey: string(id), SourcePostID: root.ResultPostID, OutputKind: app.OutputReply, RootJobID: root.ID, ChainDepth: 1, MaxChainDepth: depth, MaxChainJobs: 6, Status: app.JobPending, CreatedAt: root.CreatedAt, AvailableAt: root.AvailableAt, ExpiresAt: root.ExpiresAt}
+			if err := store.CreateGenerationJob(context.Background(), parent); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Transaction(context.Background(), func(q *Queries) error { return continuationPublish(q, parent, "@depth_child") }); err != nil {
+				t.Fatal(err)
+			}
+			generationSQL(t, store, `UPDATE agent_settings SET enabled=false WHERE agent_id IN ($1,$2)`, rootAgent.AgentID, parentAgent.AgentID)
+			count, err := continuationRun(store, parent.ID)
+			if err != nil || count != 0 {
+				t.Fatalf("depth 2 exceeded %s bound: %d %v", limit, count, err)
 			}
 		})
 	}

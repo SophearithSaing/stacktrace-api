@@ -43,7 +43,11 @@ func TestGenerationSourceDeletion(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			generationSQL(t, store, `UPDATE generation_jobs SET status='running',lease_version=4,lease_expires_at=available_at+interval '1 microsecond' WHERE id=$1`, before.ID)
+			leaseExpiry := before.AvailableAt.Add(time.Microsecond)
+			if kind == app.TriggerRepost {
+				leaseExpiry = before.ExpiresAt.Add(time.Hour)
+			}
+			generationSQL(t, store, `UPDATE generation_jobs SET status='running',lease_version=4,lease_expires_at=$2 WHERE id=$1`, before.ID, leaseExpiry)
 			switch kind {
 			case app.TriggerHumanPost:
 				err = store.DeletePost(ctx, session, action)

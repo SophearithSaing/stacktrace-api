@@ -13,9 +13,19 @@ func (q *Queries) lockHumanActor(ctx context.Context, sessionHash string) (app.I
 	queryCtx, cancel := q.queryContext(ctx)
 	defer cancel()
 	var actor app.ID
-	err := q.queryer.QueryRowContext(queryCtx, `SELECT a.id FROM sessions s JOIN accounts a ON a.id=s.account_id
-		WHERE s.token_hash=$1 AND s.expires_at>statement_timestamp() AND a.type='human' AND a.disabled_at IS NULL
-		FOR SHARE OF a,s`, sessionHash).Scan(&actor)
+	// Resolve without locking, then lock the account FIRST, as session rotation
+	// does. A joined LockRows plan could otherwise take the session lock first.
+	err := q.queryer.QueryRowContext(queryCtx, `SELECT account_id FROM sessions WHERE token_hash=$1`, sessionHash).Scan(&actor)
+	if err != nil {
+		return "", authenticationError(databaseError(queryCtx, err))
+	}
+	err = q.queryer.QueryRowContext(queryCtx, `SELECT id FROM accounts WHERE id=$1 AND type='human' AND disabled_at IS NULL FOR NO KEY UPDATE`, actor).Scan(&actor)
+	if err != nil {
+		return "", authenticationError(databaseError(queryCtx, err))
+	}
+	// Recheck after any account wait: revoke/rotation may have removed the session.
+	err = q.queryer.QueryRowContext(queryCtx, `SELECT account_id FROM sessions
+		WHERE token_hash=$1 AND account_id=$2 AND expires_at>clock_timestamp() FOR SHARE`, sessionHash, actor).Scan(&actor)
 	return actor, authenticationError(databaseError(queryCtx, err))
 }
 
@@ -76,7 +86,11 @@ func (s *Store) CreatePost(ctx context.Context, sessionHash, key string, supplie
 			return err
 		}
 		resultID = id
-		return nil
+		kind := app.TriggerHumanPost
+		if creation.QuotedPostID != nil {
+			kind = app.TriggerQuote
+		}
+		return q.enqueueSocialGeneration(ctx, kind, id, actor)
 	})
 	if err != nil {
 		return app.Post{}, err
@@ -186,7 +200,7 @@ func (s *Store) CreateReply(ctx context.Context, sessionHash, key string, suppli
 			return databaseError(queryCtx, err)
 		}
 		resultID = id
-		return nil
+		return q.enqueueSocialGeneration(ctx, app.TriggerReply, id, actor)
 	})
 	if err != nil {
 		return app.CreateReplyResult{}, err
@@ -287,7 +301,11 @@ func (s *Store) DeletePost(ctx context.Context, sessionHash string, id app.ID) e
 			return app.ErrForbidden
 		}
 		_, err = q.queryer.ExecContext(queryCtx, `UPDATE posts SET deleted_at=statement_timestamp() WHERE id=$1`, parsed)
-		return databaseError(queryCtx, err)
+		if err != nil {
+			return databaseError(queryCtx, err)
+		}
+		_, err = q.cancelRemovedGenerationSourceJobs(ctx, parsed)
+		return err
 	})
 }
 
@@ -326,6 +344,10 @@ func (s *Store) DeleteReply(ctx context.Context, sessionHash string, id app.ID) 
 			return app.ErrForbidden
 		}
 		_, err = q.queryer.ExecContext(queryCtx, `UPDATE replies SET deleted_at=statement_timestamp() WHERE id=$1`, parsed)
-		return databaseError(queryCtx, err)
+		if err != nil {
+			return databaseError(queryCtx, err)
+		}
+		_, err = q.cancelRemovedGenerationSourceJobs(ctx, parent)
+		return err
 	})
 }

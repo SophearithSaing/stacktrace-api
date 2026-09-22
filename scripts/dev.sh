@@ -97,10 +97,22 @@ start_database
 
 case "$command" in
     dev-up|smoke)
+        if [[ $command == smoke ]]; then
+            # SQL fixtures are disposable-smoke-only, not an operator enable command.
+            if [[ $backend == native ]]; then smoke_sql=("$pg_bin/psql");
+            else smoke_sql=(docker exec -i "stacktrace-$owner" psql -U stacktrace -d stacktrace); fi
+            run python3 -B scripts/smoke_generation.py "$state" unmigrated "${smoke_sql[@]}"
+        fi
         run "$state/db" migrate
-        if [[ $command == smoke ]]; then run "$state/worker" check; fi
+        if [[ $command == smoke ]]; then
+            run "$state/worker" check
+            run python3 -B scripts/smoke_generation.py "$state" empty "${smoke_sql[@]}"
+        fi
         run "$state/db" seed
-        if [[ $command == smoke ]]; then run "$state/worker" check; fi
+        if [[ $command == smoke ]]; then
+            run "$state/worker" check
+            run python3 -B scripts/smoke_generation.py "$state" seeded "${smoke_sql[@]}"
+        fi
         stop_process api
         mv "$state/server.next" "$state/server"
         if [[ $command == smoke ]]; then
@@ -108,9 +120,11 @@ case "$command" in
             unset DEV_CLIENT_ORIGINS
             start_api 1 0
             run python3 scripts/smoke.py "$API_PUBLIC_ORIGIN" setup "$state/smoke-fixture.json"
+            run python3 -B scripts/smoke_generation.py "$state" http "${smoke_sql[@]}"
             stop_process api
             start_api 1 0
             run python3 scripts/smoke.py "$API_PUBLIC_ORIGIN" verify "$state/smoke-fixture.json"
+            run python3 -B scripts/smoke_generation.py "$state" verify "${smoke_sql[@]}"
         else
             start_api 0 "${DEV_PORT:-8080}"
             echo "Logs: $state/api.log, $state/postgres.log, $state/commands.log"

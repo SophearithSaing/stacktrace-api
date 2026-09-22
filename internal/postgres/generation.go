@@ -159,11 +159,11 @@ func (q *Queries) CreateGenerationJob(ctx context.Context, job app.GenerationJob
 	}
 	_, err := q.queryer.ExecContext(ctx, `INSERT INTO generation_jobs(id,agent_id,persona_version,trigger_kind,trigger_key,
 		trigger_actor_id,cooldown_key,source_post_id,source_reply_id,source_repost_id,output_kind,root_job_id,chain_depth,
-		status,available_at,expires_at,lease_version,created_at)
-		VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,$9,$10,$11,$12,$13,'pending',$14,$15,0,$16)`,
+		status,available_at,expires_at,lease_version,created_at,max_chain_depth,max_chain_jobs)
+		VALUES($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8,$9,$10,$11,$12,$13,'pending',$14,$15,0,$16,$17,$18)`,
 		job.ID, job.AgentID, job.PersonaVersion, job.TriggerKind, job.TriggerKey, job.TriggerActorID, job.CooldownKey,
 		job.SourcePostID, job.SourceReplyID, job.SourceRepostID, job.OutputKind, job.RootJobID, job.ChainDepth,
-		job.AvailableAt, job.ExpiresAt, job.CreatedAt)
+		job.AvailableAt, job.ExpiresAt, job.CreatedAt, job.MaxChainDepth, job.MaxChainJobs)
 	return databaseError(ctx, err)
 }
 
@@ -175,12 +175,13 @@ func (q *Queries) GenerationJobByID(ctx context.Context, id app.ID) (app.Generat
 	err := q.queryer.QueryRowContext(ctx, `SELECT j.id,j.agent_id,j.persona_version,j.trigger_kind,j.trigger_key,
 		j.trigger_actor_id,COALESCE(j.cooldown_key,''),j.source_post_id,j.source_reply_id,j.source_repost_id,j.output_kind,
 		j.root_job_id,j.chain_depth,j.status,j.available_at,j.expires_at,j.lease_version,j.lease_expires_at,
-		j.result_post_id,j.result_reply_id,j.published_attempt_id,COALESCE(j.reason_code,''),j.created_at,j.finished_at,a.type
+		j.result_post_id,j.result_reply_id,j.published_attempt_id,COALESCE(j.reason_code,''),j.created_at,j.finished_at,
+		j.max_chain_depth,j.max_chain_jobs,a.type
 		FROM generation_jobs j JOIN accounts a ON a.id=j.agent_id WHERE j.id=$1`, id).Scan(
 		&job.ID, &job.AgentID, &job.PersonaVersion, &job.TriggerKind, &job.TriggerKey, &job.TriggerActorID, &job.CooldownKey,
 		&job.SourcePostID, &job.SourceReplyID, &job.SourceRepostID, &job.OutputKind, &job.RootJobID, &job.ChainDepth, &job.Status,
 		&job.AvailableAt, &job.ExpiresAt, &job.LeaseVersion, &job.LeaseExpiresAt, &job.ResultPostID, &job.ResultReplyID,
-		&job.PublishedAttemptID, &job.ReasonCode, &job.CreatedAt, &job.FinishedAt, &accountType)
+		&job.PublishedAttemptID, &job.ReasonCode, &job.CreatedAt, &job.FinishedAt, &job.MaxChainDepth, &job.MaxChainJobs, &accountType)
 	if err != nil {
 		return app.GenerationJob{}, databaseError(ctx, err)
 	}

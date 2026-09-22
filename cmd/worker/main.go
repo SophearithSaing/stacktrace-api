@@ -25,11 +25,15 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, output io.Writer) error {
-	if len(args) != 1 || args[0] != "check" {
-		return errors.New("usage: worker check (read-only configuration check; no generation execution)")
+	if len(args) != 1 || (args[0] != "check" && args[0] != "schedule") {
+		return errors.New("usage: worker check | schedule (read-only preflight | bounded enqueue pass; no generation execution)")
 	}
 	// Includes opening the database, not just the preflight queries.
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	deadline := 10 * time.Second
+	if args[0] == "schedule" {
+		deadline = 35 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
 	cfg, err := config.Load(config.Database)
 	if err != nil {
@@ -40,10 +44,24 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 		return err
 	}
 	defer store.Close()
+	if args[0] == "schedule" {
+		result, err := schedule(ctx, store)
+		return reportSchedule(output, result, err)
+	}
 	summary, err := worker.Check(ctx, store)
 	if err != nil {
 		return err
 	}
 	_, err = fmt.Fprintf(output, "Check-only configuration OK: configured=%d enabled=%d; no generation executed\n", summary.Configured, summary.Enabled)
 	return err
+}
+
+func reportSchedule(output io.Writer, result postgres.GenerationScheduleResult, scheduleErr error) error {
+	state := "complete"
+	if scheduleErr != nil {
+		state = "incomplete"
+	}
+	_, outputErr := fmt.Fprintf(output, "Schedule pass %s: visited=%d invalid=%d enqueued=%d denied=%d expired=%d; no generation executed\n",
+		state, result.AgentsVisited, result.InvalidAgents, result.JobsEnqueued, result.SlotsDenied, result.JobsExpired)
+	return errors.Join(scheduleErr, outputErr)
 }

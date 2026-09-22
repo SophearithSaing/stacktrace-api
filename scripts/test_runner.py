@@ -334,6 +334,10 @@ class RunnerTests(unittest.TestCase):
                 self.assertIn("after API restart", output)
                 self.assertIn("Check-only configuration OK: configured=0 enabled=0; no generation executed", output)
                 self.assertIn("Check-only configuration OK: configured=2 enabled=0; no generation executed", output)
+                self.assertIn("Schedule refused unmigrated database without DDL.", output)
+                self.assertIn("visited=2 invalid=1 enqueued=1", output)
+                self.assertIn("Live trigger smoke passed", output)
+                self.assertIn("Schedule restart verification passed", output)
                 self.assertEqual(output.count("API ready:"), 2, output)
             tests = [
                 pool.submit(self.command, "make", "test", "TEST_ARGS=-run TestSeed -v")

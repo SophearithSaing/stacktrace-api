@@ -38,19 +38,24 @@ const (
 )
 
 type GenerationJob struct {
-	ID                 ID
-	AgentID            ID
-	PersonaVersion     int
-	TriggerKind        GenerationTrigger
-	TriggerKey         string
-	TriggerActorID     *ID
-	CooldownKey        string
-	SourcePostID       *ID
-	SourceReplyID      *ID
-	SourceRepostID     *ID
-	OutputKind         GenerationOutput
-	RootJobID          ID
-	ChainDepth         int
+	ID             ID
+	AgentID        ID
+	PersonaVersion int
+	TriggerKind    GenerationTrigger
+	TriggerKey     string
+	TriggerActorID *ID
+	CooldownKey    string
+	SourcePostID   *ID
+	SourceReplyID  *ID
+	SourceRepostID *ID
+	OutputKind     GenerationOutput
+	RootJobID      ID
+	ChainDepth     int
+	// Root policy snapshots, inherited exactly by every child. A responding
+	// agent's current stricter policy is an additional admission limit, never a
+	// reason to mutate these or expand the root's allowance.
+	MaxChainDepth      int
+	MaxChainJobs       int
 	Status             GenerationJobStatus
 	AvailableAt        time.Time
 	ExpiresAt          time.Time
@@ -75,6 +80,9 @@ func (j GenerationJob) Validate() error {
 	}
 	if !validGenerationText(j.TriggerKey, 256) || j.ChainDepth < 0 || j.ChainDepth > 10 || (j.ChainDepth == 0) != (j.RootJobID == j.ID) {
 		return fmt.Errorf("invalid trigger key or chain identity")
+	}
+	if j.MaxChainDepth < 0 || j.MaxChainDepth > 10 || j.MaxChainJobs < 1 || j.MaxChainJobs > 100 || j.MaxChainDepth >= j.MaxChainJobs || j.ChainDepth > j.MaxChainDepth {
+		return fmt.Errorf("invalid immutable chain limits")
 	}
 	if j.OutputKind != OutputPost && j.OutputKind != OutputQuote && j.OutputKind != OutputReply {
 		return fmt.Errorf("invalid output kind")
@@ -173,6 +181,33 @@ func (j GenerationJob) Validate() error {
 func (j GenerationJob) ValidateLease(expectedVersion int64, now time.Time) error {
 	if j.Status != JobRunning || expectedVersion <= 0 || j.LeaseVersion != expectedVersion || j.LeaseExpiresAt == nil || !now.Before(*j.LeaseExpiresAt) || !now.Before(j.ExpiresAt) || now.Before(j.AvailableAt) {
 		return fmt.Errorf("stale, unavailable or expired generation lease")
+	}
+	return nil
+}
+
+// ValidateGenerationSourceInvalidation is a separate trusted cleanup contract.
+// The caller must prove source invalidity under source/job locks; an expired
+// owner lease cannot keep removed content eligible. This does not authorize
+// ordinary owner cancellation, retry, spend or publication without a live lease.
+func ValidateGenerationSourceInvalidation(before, after GenerationJob, expectedVersion int64, now time.Time) error {
+	if err := before.Validate(); err != nil {
+		return err
+	}
+	if err := after.Validate(); err != nil {
+		return err
+	}
+	if before.SourcePostID == nil || (before.Status != JobPending && before.Status != JobRetryWait && before.Status != JobRunning) {
+		return fmt.Errorf("source invalidation requires active social work")
+	}
+	if !sameGenerationJobIdentity(before, after) || expectedVersion != before.LeaseVersion || after.LeaseVersion != before.LeaseVersion || after.LeaseExpiresAt != nil || !after.AvailableAt.Equal(before.AvailableAt) || now.Before(before.CreatedAt) || after.FinishedAt == nil || !after.FinishedAt.Equal(now) {
+		return fmt.Errorf("invalid source cleanup identity or fence")
+	}
+	status, reason := JobCancelled, "source_removed"
+	if !now.Before(before.ExpiresAt) {
+		status, reason = JobSkipped, "stale_trigger"
+	}
+	if after.Status != status || after.ReasonCode != reason {
+		return fmt.Errorf("invalid source cleanup outcome")
 	}
 	return nil
 }
@@ -276,7 +311,27 @@ func sameGenerationJobIdentity(a, b GenerationJob) bool {
 		sameGenerationID(a.SourcePostID, b.SourcePostID) && sameGenerationID(a.SourceReplyID, b.SourceReplyID) &&
 		sameGenerationID(a.SourceRepostID, b.SourceRepostID) && a.OutputKind == b.OutputKind &&
 		a.RootJobID == b.RootJobID && a.ChainDepth == b.ChainDepth &&
+		a.MaxChainDepth == b.MaxChainDepth && a.MaxChainJobs == b.MaxChainJobs &&
 		a.ExpiresAt.Equal(b.ExpiresAt) && a.CreatedAt.Equal(b.CreatedAt)
+}
+
+// ValidateGenerationContinuation checks lineage and exact root-limit inheritance.
+// Admission must additionally lock the root and reserve total chain capacity,
+// counting every retained job regardless of outcome, and apply the child's own
+// conservative policy limits. This pure check does not reserve that capacity.
+func ValidateGenerationContinuation(root, parent, child GenerationJob) error {
+	for _, job := range []GenerationJob{root, parent, child} {
+		if err := job.Validate(); err != nil {
+			return err
+		}
+	}
+	if root.ChainDepth != 0 || parent.RootJobID != root.ID || child.RootJobID != root.ID || child.TriggerKind != TriggerContinuation || child.ChainDepth != parent.ChainDepth+1 {
+		return fmt.Errorf("invalid continuation lineage")
+	}
+	if parent.MaxChainDepth != root.MaxChainDepth || parent.MaxChainJobs != root.MaxChainJobs || child.MaxChainDepth != root.MaxChainDepth || child.MaxChainJobs != root.MaxChainJobs {
+		return fmt.Errorf("continuations must inherit immutable root limits")
+	}
+	return nil
 }
 
 func sameGenerationID(a, b *ID) bool { return a == nil && b == nil || a != nil && b != nil && *a == *b }

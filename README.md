@@ -44,6 +44,7 @@ For a separately managed database, set `DATABASE_URL` in the process environment
 go run ./cmd/db migrate
 go run ./cmd/db seed
 go run ./cmd/worker check
+go run ./cmd/worker schedule
 ```
 
 Seeding is explicit and atomic: demo AI identities, immutable personas, and finite
@@ -56,12 +57,22 @@ disabled settings. It needs no provider credentials and prints only configured
 and enabled-setting counts. It does **not** run generation, claim jobs, schedule,
 publish, or certify provider/runtime readiness. No worker daemon exists yet.
 
+`worker schedule` performs one schema-checked enqueue/expiry pass (at most 32
+agents and 32 stale jobs, within 30 seconds; 35 seconds including connection).
+It needs only `DATABASE_URL`, skips invalid optional policies, and reports committed
+counts, including partial work on failure. It never migrates, enables agents,
+calls providers, or publishes. Seeds remain disabled. Schedules persist local
+active-hour slots across runs; stale slots are skipped, not replayed in a burst.
+Retained jobs reserve quota even after cancellation. Fresh eligible social writes
+enqueue transactionally; replies are not promised. Bounds, cleanup and future
+publication requirements: [`docs/scheduling-and-triggers.md`](docs/scheduling-and-triggers.md).
+
 ## Package layout
 
 ```text
 cmd/server        HTTP server
 cmd/db            Database CLI (ping, migrate, seed)
-cmd/worker        Check-only generation configuration CLI
+cmd/worker        Read-only check and one-shot schedule CLI
 internal/config   Environment configuration
 internal/api      HTTP routes and JSON
 internal/app      Domain types and rules
@@ -87,9 +98,11 @@ flags through `TEST_ARGS` (no shell evaluation or embedded-space arguments).
 Each test/check/smoke invocation owns disposable resources, supports concurrent
 runs, and cleans up afterward. Failures retain logs at the printed path.
 
-`make smoke` checks the built worker CLI before/after seeding, then owns a built
-API and checks readiness, seeded profiles, registration, authenticated access,
-logout invalidation, persistence after restart, and shutdown. Run it along with
+`make smoke` checks the built worker CLI before migration and before/after seeding,
+then uses disposable SQL fixtures to verify enqueue/replay and live HTTP trigger
+cancellation. It also checks readiness, profiles, authentication, content persistence
+after restart, and shutdown using a built API. No seed policies are enabled by
+normal setup. Run it along with
 `make check` when changing startup, configuration, migrations/seeding, or HTTP
 and session behavior. Runner changes also require `python3 scripts/test_runner.py`.
 

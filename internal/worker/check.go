@@ -1,5 +1,5 @@
-// Package worker provides read-only preflight and bounded enqueue orchestration.
-// It does not claim, generate or publish work, and has no provider client.
+// Package worker provides a check-only configuration preflight. It does not
+// schedule, claim, generate or publish work, and has no provider client.
 package worker
 
 import (

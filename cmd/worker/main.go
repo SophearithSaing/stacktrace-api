@@ -45,7 +45,7 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 	}
 	defer store.Close()
 	if args[0] == "schedule" {
-		result, err := worker.Schedule(ctx, store)
+		result, err := schedule(ctx, store)
 		return reportSchedule(output, result, err)
 	}
 	summary, err := worker.Check(ctx, store)

@@ -1,4 +1,4 @@
-package worker
+package main
 
 import (
 	"context"
@@ -7,15 +7,15 @@ import (
 	"github.com/SophearithSaing/stacktrace-api/internal/postgres"
 )
 
-type ScheduleStore interface {
+type scheduleStore interface {
 	Ready(context.Context) error
 	ScheduleGeneration(context.Context) (postgres.GenerationScheduleResult, error)
 }
 
-// Schedule requires compatible migrations before any mutation. Do not use Check
+// schedule requires compatible migrations before any mutation. Do not use Check
 // here: invalid optional agent settings must be skipped by admission, not prevent
 // scheduling healthy agents. Preserve committed counts even on partial failure.
-func Schedule(ctx context.Context, store ScheduleStore) (postgres.GenerationScheduleResult, error) {
+func schedule(ctx context.Context, store scheduleStore) (postgres.GenerationScheduleResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if err := ctx.Err(); err != nil {

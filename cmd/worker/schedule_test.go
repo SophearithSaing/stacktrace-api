@@ -1,4 +1,4 @@
-package worker
+package main
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"github.com/SophearithSaing/stacktrace-api/internal/postgres"
 )
 
-type scheduleStore struct {
+type fakeScheduleStore struct {
 	readyErr, scheduleErr error
 	result                postgres.GenerationScheduleResult
 	ready, scheduled      bool
@@ -17,7 +17,7 @@ type scheduleStore struct {
 	cancel                context.CancelFunc
 }
 
-func (s *scheduleStore) Ready(ctx context.Context) error {
+func (s *fakeScheduleStore) Ready(ctx context.Context) error {
 	s.ready = true
 	s.deadline, _ = ctx.Deadline()
 	if s.cancel != nil {
@@ -26,7 +26,7 @@ func (s *scheduleStore) Ready(ctx context.Context) error {
 	return s.readyErr
 }
 
-func (s *scheduleStore) ScheduleGeneration(context.Context) (postgres.GenerationScheduleResult, error) {
+func (s *fakeScheduleStore) ScheduleGeneration(context.Context) (postgres.GenerationScheduleResult, error) {
 	s.scheduled = true
 	return s.result, s.scheduleErr
 }
@@ -35,9 +35,9 @@ func TestSchedule(t *testing.T) {
 	partial := postgres.GenerationScheduleResult{AgentsVisited: 3, InvalidAgents: 1, JobsEnqueued: 1, SlotsDenied: 1, JobsExpired: 2}
 	failure := errors.New("safe database failure")
 	for _, scheduleErr := range []error{nil, failure} {
-		store := &scheduleStore{result: partial, scheduleErr: scheduleErr}
+		store := &fakeScheduleStore{result: partial, scheduleErr: scheduleErr}
 		start := time.Now()
-		got, err := Schedule(context.Background(), store)
+		got, err := schedule(context.Background(), store)
 		if !errors.Is(err, scheduleErr) || got != partial || !store.ready || !store.scheduled {
 			t.Fatalf("schedule: %+v %v", got, err)
 		}
@@ -45,8 +45,8 @@ func TestSchedule(t *testing.T) {
 			t.Fatal("unbounded pass")
 		}
 	}
-	store := &scheduleStore{readyErr: failure}
-	got, err := Schedule(context.Background(), store)
+	store := &fakeScheduleStore{readyErr: failure}
+	got, err := schedule(context.Background(), store)
 	if !errors.Is(err, failure) || got != (postgres.GenerationScheduleResult{}) || !store.ready || store.scheduled {
 		t.Fatal("mutated incompatible schema")
 	}
@@ -55,13 +55,13 @@ func TestSchedule(t *testing.T) {
 func TestScheduleCancellation(t *testing.T) {
 	for _, beforeReady := range []bool{true, false} {
 		ctx, cancel := context.WithCancel(context.Background())
-		store := &scheduleStore{}
+		store := &fakeScheduleStore{}
 		if beforeReady {
 			cancel()
 		} else {
 			store.cancel = cancel
 		}
-		got, err := Schedule(ctx, store)
+		got, err := schedule(ctx, store)
 		cancel()
 		if !errors.Is(err, context.Canceled) || got != (postgres.GenerationScheduleResult{}) || store.scheduled || store.ready == beforeReady {
 			t.Fatalf("cancelled pass: %+v %v", got, err)

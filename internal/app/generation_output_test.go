@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func generationOutputJob(kind GenerationOutput) GenerationJob {
@@ -168,5 +169,65 @@ func TestGenerationRepetition(t *testing.T) {
 	}
 	if err := ValidateGenerationSafety(result, []Content{{Body: ""}}); err == nil {
 		t.Fatal("invalid history accepted")
+	}
+}
+
+func TestGenerationPublicationOutputBinding(t *testing.T) {
+	job := testRunningJob()
+	result, err := DecodeGenerationResult([]byte(`{"decision":"publish","body":"An exact result"}`), job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt := testGenerationAttempt(job)
+	finish := job.CreatedAt.Add(time.Second)
+	attempt.Status, attempt.FinishedAt, attempt.OutputDigest = AttemptSucceeded, &finish, result.Digest()
+	if err := ValidateGenerationPublicationOutput(job, attempt, result, nil, finish); err != nil {
+		t.Fatal(err)
+	}
+	for name, change := range map[string]func(*GenerationAttempt){
+		"legacy":      func(a *GenerationAttempt) { a.OutputDigest = "" },
+		"other job":   func(a *GenerationAttempt) { a.JobID = NewID() },
+		"other lease": func(a *GenerationAttempt) { a.LeaseVersion++ },
+		"wrong digest": func(a *GenerationAttempt) {
+			a.OutputDigest = GenerationOutputDigestVersion + ":" + strings.Repeat("0", 64)
+		},
+		"future finish":       func(a *GenerationAttempt) { later := finish.Add(time.Second); a.FinishedAt = &later },
+		"before availability": func(a *GenerationAttempt) { a.StartedAt = job.AvailableAt.Add(-time.Second) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := attempt
+			change(&changed)
+			if ValidateGenerationPublicationOutput(job, changed, result, nil, finish) == nil {
+				t.Fatal("unbound publication accepted")
+			}
+		})
+	}
+	if ValidateGenerationPublicationOutput(job, attempt, result, nil, *job.LeaseExpiresAt) == nil {
+		t.Fatal("expired lease accepted")
+	}
+	if ValidateGenerationPublicationOutput(job, attempt, result, []Content{{Body: "An exact result"}}, finish) == nil {
+		t.Fatal("fresh repetition ignored")
+	}
+	legacy := attempt
+	legacy.OutputDigest = ""
+	if legacy.Validate() != nil {
+		t.Fatal("legacy attempt is unreadable")
+	}
+	for _, digest := range []string{"bad", strings.ToUpper(result.Digest()), "generation_output_v2:" + strings.Repeat("a", 64), result.Digest() + "\n"} {
+		changed := attempt
+		changed.OutputDigest = digest
+		if changed.Validate() == nil {
+			t.Fatal("invalid digest accepted")
+		}
+	}
+	reserved := testGenerationAttempt(job)
+	reserved.OutputDigest = result.Digest()
+	if reserved.Validate() == nil {
+		t.Fatal("reserved output accepted")
+	}
+	skip, err := DecodeGenerationResult([]byte(`{"decision":"skip","reason":"not_relevant"}`), job)
+	attempt.OutputDigest = skip.Digest()
+	if err != nil || ValidateGenerationPublicationOutput(job, attempt, skip, nil, finish) == nil {
+		t.Fatal("skip published", err)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -151,6 +152,18 @@ func validGenerationOutputDigest(digest string) bool {
 	hexValue, ok := strings.CutPrefix(digest, GenerationOutputDigestVersion+":")
 	decoded, err := hex.DecodeString(hexValue)
 	return ok && err == nil && len(decoded) == sha256.Size && hex.EncodeToString(decoded) == hexValue
+}
+
+// ValidateGenerationPublicationOutput is a pure, fail-closed binding check, not
+// publication authority. The store must additionally lock and recheck source,
+// account/settings/policy/lease and perform all writes atomically. Historical
+// succeeded attempts without a digest remain readable, but cannot authorize new
+// publication. Re-run safety/repetition against a fresh bounded public snapshot.
+func ValidateGenerationPublicationOutput(job GenerationJob, attempt GenerationAttempt, result GenerationResult, recent []Content, now time.Time) error {
+	if job.Validate() != nil || job.ValidateLease(attempt.LeaseVersion, now) != nil || attempt.Validate() != nil || attempt.JobID != job.ID || attempt.Status != AttemptSucceeded || attempt.StartedAt.Before(job.AvailableAt) || attempt.FinishedAt.After(now) || result.Decision() != GenerationPublish || result.OutputKind() != job.OutputKind || attempt.OutputDigest == "" || result.Digest() != attempt.OutputDigest {
+		return ErrGenerationOutput
+	}
+	return ValidateGenerationSafety(result, recent)
 }
 
 func generationObject(data []byte, allowed ...string) (map[string]json.RawMessage, error) {

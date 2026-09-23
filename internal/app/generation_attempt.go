@@ -28,14 +28,17 @@ type GenerationAttempt struct {
 	ProviderRequestID     string
 	ContextHash           string
 	ContextBuilderVersion string
-	BudgetDay             string
-	ReservedTokens        int64
-	InputTokens           *int64
-	OutputTokens          *int64
-	Status                GenerationAttemptStatus
-	ErrorCode             string
-	StartedAt             time.Time
-	FinishedAt            *time.Time
+	// Empty for legacy attempts. Only successful validated results may carry a
+	// versioned digest; new publication must reject the legacy empty value.
+	OutputDigest   string
+	BudgetDay      string
+	ReservedTokens int64
+	InputTokens    *int64
+	OutputTokens   *int64
+	Status         GenerationAttemptStatus
+	ErrorCode      string
+	StartedAt      time.Time
+	FinishedAt     *time.Time
 }
 
 func (a GenerationAttempt) Validate() error {
@@ -48,6 +51,9 @@ func (a GenerationAttempt) Validate() error {
 	hash, err := hex.DecodeString(a.ContextHash)
 	if err != nil || len(hash) != 32 || hex.EncodeToString(hash) != a.ContextHash {
 		return fmt.Errorf("context hash must be lowercase SHA-256 hex")
+	}
+	if a.OutputDigest != "" && (a.Status != AttemptSucceeded || !validGenerationOutputDigest(a.OutputDigest)) {
+		return fmt.Errorf("invalid attempt output digest")
 	}
 	if a.StartedAt.IsZero() || !validGenerationDate(a.BudgetDay) || a.BudgetDay != a.StartedAt.UTC().Format(time.DateOnly) || a.ReservedTokens <= 0 {
 		return fmt.Errorf("invalid attempt reservation or UTC budget day")

@@ -201,12 +201,13 @@ func (q *Queries) GenerationAttemptByID(ctx context.Context, id app.ID) (app.Gen
 	var accountType app.AccountType
 	err := q.queryer.QueryRowContext(ctx, `SELECT t.id,t.job_id,t.attempt_number,t.lease_version,t.provider,t.model,
 		COALESCE(t.provider_request_id,''),t.context_hash,t.context_builder_version,to_char(t.budget_day,'YYYY-MM-DD'),
-		t.reserved_tokens,t.input_tokens,t.output_tokens,t.status,COALESCE(t.error_code,''),t.started_at,t.finished_at,a.type
+		t.reserved_tokens,t.input_tokens,t.output_tokens,t.status,COALESCE(t.error_code,''),t.started_at,t.finished_at,
+		COALESCE(t.output_digest,''),a.type
 		FROM generation_attempts t JOIN generation_jobs j ON j.id=t.job_id JOIN accounts a ON a.id=j.agent_id WHERE t.id=$1`, id).Scan(
 		&attempt.ID, &attempt.JobID, &attempt.AttemptNumber, &attempt.LeaseVersion, &attempt.Provider, &attempt.Model,
 		&attempt.ProviderRequestID, &attempt.ContextHash, &attempt.ContextBuilderVersion, &attempt.BudgetDay,
 		&attempt.ReservedTokens, &attempt.InputTokens, &attempt.OutputTokens, &attempt.Status, &attempt.ErrorCode,
-		&attempt.StartedAt, &attempt.FinishedAt, &accountType)
+		&attempt.StartedAt, &attempt.FinishedAt, &attempt.OutputDigest, &accountType)
 	if err != nil {
 		return app.GenerationAttempt{}, databaseError(ctx, err)
 	}

@@ -52,19 +52,16 @@ type UsageAssessment struct {
 	StopExecution   bool
 }
 
-// AssessUsage checks the individual request bounds, not just their sum. A prompt
-// over its reserved bound cannot borrow unused completion capacity. Missing,
-// negative or inconsistent usage retains the full reservation. Unsupported or
-// over-bound usage additionally stops execution for operator review. An uncertain
-// remote outcome always retains the full reservation, even with partial usage.
-func AssessUsage(inputBound, outputBound int64, usage *Usage, uncertain, unsupported bool) UsageAssessment {
-	reserved, err := TokenReservation(inputBound, outputBound)
-	assessment := UsageAssessment{AccountedTokens: reserved, StopExecution: unsupported || err != nil}
-	if err != nil {
-		return assessment
-	}
+// AssessUsage separates operational targets from the financial reservation.
+// Known usage within 8192/1024 may settle downward, irrespective of the local
+// reference estimate. Unknown/negative/inconsistent usage retains all 132096.
+// Exceeding either local target cannot borrow the other's slack or the much
+// larger financial ceiling: retain the full reservation and stop for review.
+// Unsupported accounting or uncertain remote execution cannot settle downward.
+func AssessUsage(usage *Usage, uncertain, unsupported bool) UsageAssessment {
+	assessment := UsageAssessment{AccountedTokens: ReservedTokensPerCall, StopExecution: unsupported}
 	if usage != nil {
-		if usage.PromptTokens != nil && *usage.PromptTokens > inputBound || usage.CompletionTokens != nil && *usage.CompletionTokens > outputBound || usage.TotalTokens != nil && *usage.TotalTokens > reserved {
+		if usage.PromptTokens != nil && *usage.PromptTokens > MaxInputTokens || usage.CompletionTokens != nil && *usage.CompletionTokens > MaxOutputTokens || usage.TotalTokens != nil && *usage.TotalTokens > MaxInputTokens+MaxOutputTokens {
 			assessment.StopExecution = true
 		}
 	}

@@ -2,7 +2,6 @@ package llm
 
 import (
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -42,21 +41,50 @@ func TestGenerationPrompt(t *testing.T) {
 	}
 	// Exact UTF-8 byte growth, not runes/4. JSON marshaling is already included.
 	multibyte, err := BuildPrompt(generationRequest(t, "Discuss Go.界"))
-	if err != nil || multibyte.ReferenceInputTokenBound()-first.ReferenceInputTokenBound() != 3 {
+	if err != nil || multibyte.LocalInputTokenEstimate()-first.LocalInputTokenEstimate() != 3 {
 		t.Fatal("not a byte bound", err)
 	}
-	if first.ReferenceInputTokenBound() != int64(len(first.System())+len(first.User())+len(first.Schema())+34) {
+	if first.LocalInputTokenEstimate() != int64(len(first.System())+len(first.User())+len(first.Schema())+34) {
 		t.Fatal("framing or schema missing")
 	}
-	if reservation, err := first.AdmissionReservation(); reservation != 0 || !errors.Is(err, ErrUnverifiedInputBound) {
-		t.Fatal("unverified hosted bound enabled calls")
+	if reservation, err := first.AdmissionReservation(); reservation != 132096 || err != nil {
+		t.Fatal("tiny prompt did not reserve full provider ceiling", reservation, err)
 	}
-	if _, err := (Prompt{}).AdmissionReservation(); !errors.Is(err, ErrUnverifiedInputBound) {
+	if _, err := (Prompt{}).AdmissionReservation(); err == nil {
 		t.Fatal("zero prompt enabled calls")
 	}
 	request.Job.ID = app.NewID()
 	if _, err := BuildPrompt(request); err == nil {
 		t.Fatal("accepted unrelated context")
+	}
+}
+
+func TestGenerationPromptAdmissionBoundary(t *testing.T) {
+	base, err := BuildPrompt(generationRequest(t, "x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, delta := range []int{0, 1} {
+		instructions := strings.Repeat("x", 1+MaxInputTokens-int(base.LocalInputTokenEstimate())+delta)
+		prompt, err := BuildPrompt(generationRequest(t, instructions))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if prompt.LocalInputTokenEstimate() != int64(MaxInputTokens+delta) {
+			t.Fatal("incorrect construction estimate")
+		}
+		reservation, err := prompt.AdmissionReservation()
+		if delta == 0 && (err != nil || reservation != 132096) || delta == 1 && (err == nil || reservation != 0) {
+			t.Fatalf("boundary %d: %d %v", delta, reservation, err)
+		}
+	}
+	// Schema/framing overhead is counted even when bare message text would fit.
+	oversized, err := BuildPrompt(generationRequest(t, strings.Repeat("x", MaxInputTokens-int(base.LocalInputTokenEstimate())+2)))
+	if err != nil || len(oversized.System())+len(oversized.User()) >= MaxInputTokens {
+		t.Fatal("invalid overhead boundary fixture", err)
+	}
+	if _, err := oversized.AdmissionReservation(); err == nil {
+		t.Fatal("ignored framing/schema overhead")
 	}
 }
 
@@ -86,38 +114,49 @@ func TestGenerationUsageAssessment(t *testing.T) {
 		accounted   int64
 		known, stop bool
 	}{
-		"known":                 {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120}`, 120, true, false},
-		"zero output":           {`{"prompt_tokens":100,"completion_tokens":0,"total_tokens":100}`, 100, true, false},
-		"missing":               {`{}`, 300, false, false},
-		"null":                  {`null`, 300, false, false},
-		"partial":               {`{"prompt_tokens":100}`, 300, false, false},
-		"null count":            {`{"prompt_tokens":null,"completion_tokens":20,"total_tokens":120}`, 300, false, false},
-		"negative":              {`{"prompt_tokens":-1,"completion_tokens":20,"total_tokens":19}`, 300, false, false},
-		"inconsistent":          {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":121}`, 300, false, false},
-		"input over own bound":  {`{"prompt_tokens":101,"completion_tokens":20,"total_tokens":121}`, 300, false, true},
-		"output over own bound": {`{"prompt_tokens":90,"completion_tokens":201,"total_tokens":291}`, 300, false, true},
-		"partial over bound":    {`{"total_tokens":301}`, 300, false, true},
-		"overflow":              {`{"prompt_tokens":9223372036854775807,"completion_tokens":9223372036854775807,"total_tokens":-2}`, 300, false, true},
-		"reasoning":             {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"reasoning_tokens":1}`, 300, false, true},
-		"case alias":            {`{"Prompt_tokens":100}`, 300, false, true},
-		"duplicate":             {`{"prompt_tokens":100,"prompt_tokens":1}`, 300, false, true},
-		"trailing":              {`{} {}`, 300, false, true},
-		"fraction":              {`{"prompt_tokens":1.5}`, 300, false, true},
-		"unknown null":          {`{"unknown":null}`, 300, false, true},
+		"known":               {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120}`, 120, true, false},
+		"zero output":         {`{"prompt_tokens":100,"completion_tokens":0,"total_tokens":100}`, 100, true, false},
+		"local targets":       {`{"prompt_tokens":8192,"completion_tokens":1024,"total_tokens":9216}`, 9216, true, false},
+		"above tiny estimate": {`{"prompt_tokens":8000,"completion_tokens":20,"total_tokens":8020}`, 8020, true, false},
+		"missing":             {`{}`, 132096, false, false},
+		"absent":              {``, 132096, false, false},
+		"null":                {`null`, 132096, false, false},
+		"partial":             {`{"prompt_tokens":100}`, 132096, false, false},
+		"null count":          {`{"prompt_tokens":null,"completion_tokens":20,"total_tokens":120}`, 132096, false, false},
+		"negative":            {`{"prompt_tokens":-1,"completion_tokens":20,"total_tokens":19}`, 132096, false, false},
+		"negative output":     {`{"prompt_tokens":100,"completion_tokens":-1,"total_tokens":99}`, 132096, false, false},
+		"negative total":      {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":-120}`, 132096, false, false},
+		"zero prompt":         {`{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`, 132096, false, false},
+		"inconsistent":        {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":121}`, 132096, false, false},
+		"input over target":   {`{"prompt_tokens":8193,"completion_tokens":0,"total_tokens":8193}`, 132096, false, true},
+		"output over target":  {`{"prompt_tokens":100,"completion_tokens":1025,"total_tokens":1125}`, 132096, false, true},
+		"partial over target": {`{"total_tokens":9217}`, 132096, false, true},
+		"provider ceiling":    {`{"prompt_tokens":131072,"completion_tokens":1024,"total_tokens":132096}`, 132096, false, true},
+		"beyond ceiling":      {`{"prompt_tokens":131073,"completion_tokens":1024,"total_tokens":132097}`, 132096, false, true},
+		"overflow":            {`{"prompt_tokens":9223372036854775807,"completion_tokens":9223372036854775807,"total_tokens":-2}`, 132096, false, true},
+		"negative extremes":   {`{"prompt_tokens":-9223372036854775808,"completion_tokens":-9223372036854775808,"total_tokens":0}`, 132096, false, false},
+		"integer overflow":    {`{"prompt_tokens":9223372036854775808}`, 132096, false, true},
+		"reasoning":           {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"reasoning_tokens":1}`, 132096, false, true},
+		"case alias":          {`{"Prompt_tokens":100}`, 132096, false, true},
+		"duplicate":           {`{"prompt_tokens":100,"prompt_tokens":1}`, 132096, false, true},
+		"trailing":            {`{} {}`, 132096, false, true},
+		"fraction":            {`{"prompt_tokens":1.5}`, 132096, false, true},
+		"unknown null":        {`{"unknown":null}`, 132096, false, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			usage, unsupported := DecodeUsage([]byte(test.raw))
-			got := AssessUsage(100, 200, usage, false, unsupported)
+			got := AssessUsage(usage, false, unsupported)
 			if got.AccountedTokens != test.accounted || (got.InputTokens != nil && got.OutputTokens != nil) != test.known || got.StopExecution != test.stop {
 				t.Fatalf("assessment=%+v", got)
 			}
-			got = AssessUsage(100, 200, usage, true, unsupported)
-			if got.AccountedTokens != 300 || got.InputTokens != nil || got.OutputTokens != nil {
+			got = AssessUsage(usage, true, unsupported)
+			if got.AccountedTokens != 132096 || got.InputTokens != nil || got.OutputTokens != nil || got.StopExecution != test.stop {
 				t.Fatal("uncertain outcome settled usage")
 			}
+			got = AssessUsage(usage, false, true)
+			if got.AccountedTokens != 132096 || got.InputTokens != nil || got.OutputTokens != nil || !got.StopExecution {
+				t.Fatal("unsupported accounting settled usage")
+			}
 		})
-	}
-	if !AssessUsage(0, 200, nil, false, false).StopExecution {
-		t.Fatal("invalid reservation accepted")
 	}
 }

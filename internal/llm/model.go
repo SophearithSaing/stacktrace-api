@@ -16,12 +16,17 @@ const (
 	ContextWindowTokens       = 131072
 	SupportsStructuredOutputs = true
 
-	// Local targets, not a provider latency SLA. The future context builder must
-	// supply a conservative token upper bound including the chat template and
-	// schema, not a characters/4 estimate. Send n=1 and max_tokens explicitly.
+	// Local construction/usage targets, not proof of hosted input tokenization
+	// or a provider latency SLA. Every request uses n=1, max_tokens=1024, no
+	// reasoning/tools and context_length_exceeded_behavior=error.
 	RequestTimeout  = 45 * time.Second
 	MaxInputTokens  = 8192
 	MaxOutputTokens = 1024
+
+	// Financial reservation relies on the documented provider context ceiling
+	// plus the explicit maximum output, independently of our local estimate.
+	// This is a reviewed provider-contract assumption, not a billing guarantee.
+	ReservedTokensPerCall = ContextWindowTokens + MaxOutputTokens
 )
 
 func ValidateModel(provider, model string) error {
@@ -31,13 +36,15 @@ func ValidateModel(provider, model string) error {
 	return nil
 }
 
-// TokenReservation validates local limits and returns the upper bound that must
-// be reserved durably before each call, including retries of the same job.
-func TokenReservation(inputUpperBound, maxOutputTokens int64) (int64, error) {
-	if inputUpperBound < 1 || inputUpperBound > MaxInputTokens || maxOutputTokens < 1 || maxOutputTokens > MaxOutputTokens {
+// TokenReservation checks local construction limits, then returns the full
+// provider-ceiling reservation for every call, including tiny prompts and retries.
+// localInputEstimate is NOT a verified bound on hosted input or financial cost.
+// The output limit is fixed; retaining this parameter also checks command preflight.
+func TokenReservation(localInputEstimate, maxOutputTokens int64) (int64, error) {
+	if localInputEstimate < 1 || localInputEstimate > MaxInputTokens || maxOutputTokens != MaxOutputTokens {
 		return 0, fmt.Errorf("generation token limits exceed local bounds")
 	}
-	return inputUpperBound + maxOutputTokens, nil
+	return ReservedTokensPerCall, nil
 }
 
 // Usage matches Together's non-streaming usage object. Pointers distinguish
@@ -47,21 +54,4 @@ type Usage struct {
 	PromptTokens     *int64 `json:"prompt_tokens"`
 	CompletionTokens *int64 `json:"completion_tokens"`
 	TotalTokens      *int64 `json:"total_tokens"`
-}
-
-// AccountedTokens returns trusted known usage or the complete reservation. Only
-// call this with a positive reservation returned by TokenReservation. Unknown
-// execution outcomes must pass nil even if a partial response supplied usage.
-// Unsupported reasoning/token detail also requires nil until reviewed. The
-// adapter must alert on inconsistent or over-bound usage; never silently free
-// budget based on it. These are budget accounting rules, not billing guarantees.
-func AccountedTokens(reservedTokens int64, usage *Usage) (tokens int64, known bool) {
-	if usage == nil || usage.PromptTokens == nil || usage.CompletionTokens == nil || usage.TotalTokens == nil {
-		return reservedTokens, false
-	}
-	input, output, total := *usage.PromptTokens, *usage.CompletionTokens, *usage.TotalTokens
-	if input < 1 || input > MaxInputTokens || output < 0 || output > MaxOutputTokens || total != input+output || total > reservedTokens {
-		return reservedTokens, false
-	}
-	return total, true
 }

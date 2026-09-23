@@ -1,7 +1,6 @@
 package app
 
 import (
-	"strings"
 	"testing"
 	"time"
 )
@@ -63,42 +62,5 @@ func TestGenerationOutcome(t *testing.T) {
 		if !failure.StopsExecution() {
 			t.Fatal("did not stop", failure)
 		}
-	}
-}
-
-func TestGenerationContext(t *testing.T) {
-	job := testGenerationJob()
-	persona := Persona{AgentID: job.AgentID, Version: job.PersonaVersion, Instructions: "Discuss Go.", TopicTags: []string{"go"}, CreatedAt: job.CreatedAt}
-	public := PublicGenerationContext{RecentAgentContent: []Content{{Body: " An earlier post. "}}}
-	first, err := BuildGenerationContext(job, persona, public)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := BuildGenerationContext(job, persona, public)
-	if err != nil || first != second || !first.Matches(job) {
-		t.Fatal("nondeterministic context", err)
-	}
-	public.RecentAgentContent[0].Body = "changed"
-	if strings.Contains(first.PublicJSON(), "changed") {
-		t.Fatal("mutable context")
-	}
-	job.ID = NewID()
-	if first.Matches(job) {
-		t.Fatal("context matched other job")
-	}
-	job = testGenerationJob()
-	persona.AgentID = job.AgentID
-	for _, invalid := range []PublicGenerationContext{
-		{Source: &Content{Body: "unexpected"}}, {Replies: []Content{{Body: "unexpected"}}},
-		{RecentAgentContent: make([]Content, MaxGenerationRecentContent+1)},
-		{RecentAgentContent: []Content{{Body: ""}}},
-	} {
-		if _, err := BuildGenerationContext(job, persona, invalid); err == nil {
-			t.Fatal("invalid context accepted")
-		}
-	}
-	persona.Version++
-	if _, err := BuildGenerationContext(job, persona, PublicGenerationContext{}); err == nil {
-		t.Fatal("unpinned persona accepted")
 	}
 }

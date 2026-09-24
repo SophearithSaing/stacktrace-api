@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -14,6 +15,30 @@ type ScheduledSlot struct {
 
 // GenerationInstant is the precision used by PostgreSQL and stable slot keys.
 func GenerationInstant(at time.Time) time.Time { return at.UTC().Truncate(time.Microsecond) }
+
+// ScheduledGenerationExecutionAllowed rechecks an existing reservation, without
+// advancing or resampling its schedule. Only a canonical key proves the original
+// slot. Current age/window/day restrictions can tighten, never extend, expiry.
+func ScheduledGenerationExecutionAllowed(key string, policy GenerationPolicy, createdAt, expiresAt, now time.Time) bool {
+	if policy.Validate() != nil || createdAt.IsZero() || now.IsZero() || now.Before(createdAt) || !now.Before(expiresAt) || policy.ScheduledMaxPerDay == 0 {
+		return false
+	}
+	slot, err := time.Parse(time.RFC3339Nano, strings.TrimPrefix(key, "scheduled:v1:"))
+	if err != nil || slot.IsZero() {
+		return false
+	}
+	canonical, err := ScheduledGenerationKey(slot)
+	if err != nil || key != canonical || slot.After(createdAt) || !now.Before(slot.Add(time.Duration(policy.SourceMaxAgeSeconds)*time.Second)) {
+		return false
+	}
+	location, err := time.LoadLocation(policy.Timezone)
+	if err != nil {
+		return false
+	}
+	date := slot.In(location).Format(time.DateOnly)
+	start, end := generationWindow(date, policy, location)
+	return now.In(location).Format(time.DateOnly) == date && !slot.Before(start) && slot.Before(end) && !now.Before(start) && now.Before(end)
+}
 
 // GenerationLocalDayBounds resolves midnight with the same explicit DST rules
 // as active hours. time.Date alone can choose the previous day when midnight is

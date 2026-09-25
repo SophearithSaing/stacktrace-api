@@ -115,12 +115,21 @@ func (q *Queries) reserveGeneration(ctx context.Context, id app.ID, version int6
 			return app.GenerationAdmission{Reason: "already_admitted"}, nil
 		}
 	}
+	invalidOutputs := 0
+	for _, attempt := range attempts {
+		if attempt.ErrorCode == string(app.GenerationInvalidOutput) {
+			invalidOutputs++
+		}
+	}
+	if invalidOutputs > app.MaxGenerationInvalidRegenerations {
+		return app.GenerationAdmission{Reason: "invalid_output"}, q.finishExecutionJob(ctx, job, app.JobFailed, "invalid_output", now, now)
+	}
 	if len(attempts) >= app.MaxGenerationAttempts {
 		return app.GenerationAdmission{Reason: "attempt_limit"}, q.finishExecutionJob(ctx, job, app.JobFailed, "attempt_limit", now, now)
 	}
 	if len(attempts) > 0 {
 		last := attempts[len(attempts)-1]
-		// C1 does not recover or infer a retry from a historical observation.
+		// Admission does not recover or infer a retry from a historical observation.
 		// A separate fenced transition must acknowledge it by advancing availability.
 		// This also permits an explicit failed-job retry after lost successful output;
 		// the historical success is NEVER publication authority for the new lease.

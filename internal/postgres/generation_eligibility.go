@@ -108,7 +108,7 @@ func (q *Queries) executionPolicyAllowed(ctx context.Context, job app.Generation
 		return false, databaseError(ctx, err)
 	}
 	if job.TriggerKind == app.TriggerScheduled {
-		return app.ScheduledGenerationExecutionAllowed(job.TriggerKey, p, job.CreatedAt, job.ExpiresAt, now), nil
+		return executionTriggerTimeAllowed(job, p, time.Time{}, now), nil
 	}
 	if generationProbability(p, job.TriggerKind) == 0 || p.MaxAgentsPerTrigger == 0 || p.ReplyCapPerConversation == 0 {
 		return false, nil
@@ -124,13 +124,11 @@ func (q *Queries) executionPolicyAllowed(ctx context.Context, job app.Generation
 		return false, databaseError(ctx, err)
 	}
 	// Source age changes can tighten eligibility but never extend pinned expiry.
-	var sourceCreated time.Time
-	err = q.queryer.QueryRowContext(ctx, `SELECT COALESCE(r.created_at,rp.created_at,p.created_at)
-		FROM posts p LEFT JOIN replies r ON r.id=$2 LEFT JOIN reposts rp ON rp.id=$3 WHERE p.id=$1`, job.SourcePostID, job.SourceReplyID, job.SourceRepostID).Scan(&sourceCreated)
+	sourceCreated, err := q.executionSourceCreatedAt(ctx, job)
 	if err != nil {
-		return false, databaseError(ctx, err)
+		return false, err
 	}
-	if now.Before(sourceCreated) || !now.Before(sourceCreated.Add(time.Duration(p.SourceMaxAgeSeconds)*time.Second)) {
+	if !executionTriggerTimeAllowed(job, p, sourceCreated, now) {
 		return false, nil
 	}
 	// Direct actions count only direct roots; continuations count only their own
@@ -163,4 +161,21 @@ func (q *Queries) executionPolicyAllowed(ctx context.Context, job app.Generation
 	err = q.queryer.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT 1 FROM generation_jobs
 		WHERE root_job_id=$1 AND (id=$1 OR (created_at,id)<=($2,$3)) LIMIT $4) reserved`, job.RootJobID, job.CreatedAt, job.ID, cap+1).Scan(&count)
 	return err == nil && count <= cap, databaseError(ctx, err)
+}
+
+// Read before the final admission clock. The source rows are already locked.
+func (q *Queries) executionSourceCreatedAt(ctx context.Context, job app.GenerationJob) (time.Time, error) {
+	var created time.Time
+	err := q.queryer.QueryRowContext(ctx, `SELECT COALESCE(r.created_at,rp.created_at,p.created_at)
+		FROM posts p LEFT JOIN replies r ON r.id=$2 LEFT JOIN reposts rp ON rp.id=$3 WHERE p.id=$1`, job.SourcePostID, job.SourceReplyID, job.SourceRepostID).Scan(&created)
+	return created, databaseError(ctx, err)
+}
+
+// Recheck the time-sensitive trigger restrictions without more SQL after the
+// final clock. Retained quota/cooldown ranks depend on CreatedAt, not this clock.
+func executionTriggerTimeAllowed(job app.GenerationJob, p app.GenerationPolicy, sourceCreated, now time.Time) bool {
+	if job.TriggerKind == app.TriggerScheduled {
+		return app.ScheduledGenerationExecutionAllowed(job.TriggerKey, p, job.CreatedAt, job.ExpiresAt, now)
+	}
+	return !sourceCreated.IsZero() && !now.Before(sourceCreated) && now.Before(sourceCreated.Add(time.Duration(p.SourceMaxAgeSeconds)*time.Second))
 }

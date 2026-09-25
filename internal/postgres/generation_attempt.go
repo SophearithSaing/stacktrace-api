@@ -156,7 +156,28 @@ func (q *Queries) reserveGeneration(ctx context.Context, id app.ID, version int6
 	if err != nil {
 		return app.GenerationAdmission{}, err
 	}
-	if !allowed {
+	var sourceCreated time.Time
+	if allowed && job.TriggerKind != app.TriggerScheduled {
+		sourceCreated, err = q.executionSourceCreatedAt(ctx, job)
+		if err != nil {
+			return app.GenerationAdmission{}, err
+		}
+	}
+	// Policy SQL can consume the remaining lease/trigger lifetime or cross UTC
+	// midnight. Finish every read before sampling final authority and StartedAt.
+	// A backwards clock also restarts: it could invalidate publication spacing.
+	checkedAt := fresh
+	fresh, err = q.generationClock(ctx, override)
+	if err != nil {
+		return app.GenerationAdmission{}, err
+	}
+	if !fresh.Before(job.ExpiresAt) {
+		return app.GenerationAdmission{Reason: "stale_trigger"}, q.skipExpiredGenerationJob(ctx, job, fresh)
+	}
+	if fresh.Before(checkedAt) || job.ValidateLease(version, fresh) != nil || fresh.UTC().Format(time.DateOnly) != day {
+		return app.GenerationAdmission{}, app.ErrConflict
+	}
+	if !allowed || !executionTriggerTimeAllowed(job, policy, sourceCreated, fresh) {
 		return app.GenerationAdmission{Reason: "policy_denied"}, q.finishExecutionJob(ctx, job, app.JobSkipped, "policy_denied", fresh, fresh)
 	}
 	if global < 0 || agent < 0 || global > generationDailyTokenBudget-reserved || agent > policy.DailyTokenBudget-reserved {

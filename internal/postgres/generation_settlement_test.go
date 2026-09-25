@@ -171,7 +171,8 @@ func TestGenerationSettlementDurableMetadata(t *testing.T) {
 				t.Fatal("lost decision", saved)
 			}
 			if decision == "failure" {
-				if saved.NotBefore == nil || !saved.NotBefore.Equal(app.GenerationInstant(outcome.NotBefore)) {
+				want := outcome.NotBefore.Truncate(time.Microsecond).Add(time.Microsecond)
+				if saved.NotBefore == nil || !saved.NotBefore.Equal(want) || saved.NotBefore.Before(outcome.NotBefore) || saved.NotBefore.After(outcome.NotBefore.Add(time.Microsecond)) {
 					t.Fatal("lost normalized hint", saved)
 				}
 				outcome.NotBefore = outcome.NotBefore.In(time.FixedZone("other", 3600))
@@ -182,6 +183,49 @@ func TestGenerationSettlementDurableMetadata(t *testing.T) {
 				if ok, err := store.SettleGeneration(context.Background(), attempt, outcome, "req"); err != nil || ok {
 					t.Fatal("conflicting hint accepted", ok, err)
 				}
+			}
+		})
+	}
+}
+
+func TestGenerationSettlementRetryHintPrecision(t *testing.T) {
+	aligned := time.Date(2026, 9, 25, 10, 0, 0, 123000, time.UTC)
+	maximum := time.Date(9999, 12, 31, 23, 59, 59, 999999000, time.UTC)
+	for _, test := range []struct {
+		name string
+		hint time.Time
+		want time.Time
+	}{
+		{"aligned", aligned, aligned},
+		{"one_nanosecond", aligned.Add(time.Nanosecond), aligned.Add(time.Microsecond)},
+		{"second_carry", aligned.Truncate(time.Second).Add(time.Second - time.Nanosecond), aligned.Truncate(time.Second).Add(time.Second)},
+		{"maximum_aligned", maximum, maximum},
+		{"maximum_overflow", maximum.Add(time.Nanosecond), time.Time{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store, job, input := spendFixture(t, 500000)
+			attempt := admitSpend(t, store, job, input)
+			outcome := app.GenerationOutcome{Failure: app.GenerationRateLimited, NotBefore: test.hint}
+			for range 2 {
+				accepted, err := store.SettleGeneration(context.Background(), attempt, outcome, "req")
+				if test.want.IsZero() {
+					var validation *app.ValidationError
+					if accepted || !errors.As(err, &validation) {
+						t.Fatalf("overflow not rejected: %v %v", accepted, err)
+					}
+					if saved := storedSpend(t, store, attempt.ID); saved.Status != app.AttemptReserved || saved.NotBefore != nil {
+						t.Fatal("overflow changed reservation", saved)
+					}
+					continue
+				}
+				if err != nil || !accepted {
+					t.Fatalf("settle: %v %v", accepted, err)
+				}
+				saved := storedSpend(t, store, attempt.ID)
+				if saved.NotBefore == nil || !saved.NotBefore.Equal(test.want) || saved.NotBefore.Before(test.hint) || saved.NotBefore.After(test.hint.Add(time.Microsecond)) {
+					t.Fatal("incorrect ceiling", saved.NotBefore)
+				}
+				outcome.NotBefore = outcome.NotBefore.In(time.FixedZone("other", -7*3600))
 			}
 		})
 	}

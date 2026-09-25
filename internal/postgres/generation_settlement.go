@@ -26,7 +26,13 @@ func (s *Store) SettleGeneration(ctx context.Context, reserved app.GenerationAtt
 		return false, invalidGeneration("outcome")
 	}
 	if !outcome.NotBefore.IsZero() {
-		outcome.NotBefore = app.GenerationInstant(outcome.NotBefore)
+		// PostgreSQL stores microseconds. Round lower bounds up, never shorten
+		// the provider's requested delay by truncating sub-microsecond precision.
+		normalized := app.GenerationInstant(outcome.NotBefore)
+		if normalized.Before(outcome.NotBefore) {
+			normalized = normalized.Add(time.Microsecond)
+		}
+		outcome.NotBefore = normalized
 		if outcome.NotBefore.IsZero() || outcome.Validate() != nil {
 			return false, invalidGeneration("outcome")
 		}

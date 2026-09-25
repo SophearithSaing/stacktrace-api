@@ -193,3 +193,47 @@ func TestGenerationSettlementNeverLocksJob(t *testing.T) {
 		t.Fatalf("job lock dependence: %v %v", ok, err)
 	}
 }
+
+func TestGenerationSettlementBudgetLockAndUsageSnapshot(t *testing.T) {
+	store, job, input := spendFixture(t, 132096+9216)
+	attempt := admitSpend(t, store, job, input)
+	other := contextJob(t, store, job, map[string]any{"created_at": job.CreatedAt.Add(2 * time.Second), "available_at": job.AvailableAt.Add(2 * time.Second), "cooldown_key": string(app.NewID())})
+	otherInput, _ := readGenerationContext(t, store, other)
+	tx, err := store.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	var pid int
+	if err := tx.QueryRow(`SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock($1)`, generationBudgetLock); err != nil {
+		t.Fatal(err)
+	}
+	outcome := settlementOutcome(t, job)
+	done := make(chan error, 1)
+	go func() {
+		ok, err := store.SettleGeneration(context.Background(), attempt, outcome, "req")
+		if err == nil && !ok {
+			err = errors.New("settlement rejected")
+		}
+		done <- err
+	}()
+	waitForDatabaseBlock(t, store, pid)
+	// Settlement must snapshot counts before blocking and budget must come first.
+	*outcome.InputTokens = 1
+	if _, err := tx.Exec(`SELECT id FROM generation_attempts WHERE id=$1 FOR UPDATE NOWAIT`, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if storedSpend(t, store, attempt.ID).AccountedTokens() != 9216 {
+		t.Fatal("settled mutable alias")
+	}
+	admitSpend(t, store, other, otherInput) // Newly released cost is visible to admission.
+}

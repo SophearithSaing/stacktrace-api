@@ -30,7 +30,11 @@ type GenerationAttempt struct {
 	ContextBuilderVersion string
 	// Empty for legacy attempts. Only successful validated results may carry a
 	// versioned digest; new publication must reject the legacy empty value.
-	OutputDigest   string
+	OutputDigest string
+	// Nullable legacy metadata is not evidence of either publish or skip.
+	Decision       GenerationDecision
+	SkipReason     string
+	NotBefore      *time.Time
 	BudgetDay      string
 	ReservedTokens int64
 	InputTokens    *int64
@@ -54,6 +58,20 @@ func (a GenerationAttempt) Validate() error {
 	}
 	if a.OutputDigest != "" && (a.Status != AttemptSucceeded || !validGenerationOutputDigest(a.OutputDigest)) {
 		return fmt.Errorf("invalid attempt output digest")
+	}
+	if a.Decision != "" && (a.Status != AttemptSucceeded || a.OutputDigest == "" ||
+		(a.Decision != GenerationPublish && a.Decision != GenerationSkip)) {
+		return fmt.Errorf("invalid attempt decision")
+	}
+	if a.Decision == GenerationSkip {
+		if !validGenerationSkipReason(a.SkipReason) {
+			return fmt.Errorf("invalid attempt skip reason")
+		}
+	} else if a.SkipReason != "" {
+		return fmt.Errorf("only skip decisions may have a skip reason")
+	}
+	if a.NotBefore != nil && ((a.Status != AttemptFailed && a.Status != AttemptUnknown) || !validGenerationOutcomeTime(*a.NotBefore)) {
+		return fmt.Errorf("invalid attempt retry hint")
 	}
 	if a.StartedAt.IsZero() || !validGenerationDate(a.BudgetDay) || a.BudgetDay != a.StartedAt.UTC().Format(time.DateOnly) || a.ReservedTokens <= 0 {
 		return fmt.Errorf("invalid attempt reservation or UTC budget day")

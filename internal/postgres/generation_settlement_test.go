@@ -146,6 +146,47 @@ func TestGenerationSettlementConservativeUsage(t *testing.T) {
 
 func spendInt(value int64) *int64 { return &value }
 
+func TestGenerationSettlementDurableMetadata(t *testing.T) {
+	for _, decision := range []string{"publish", "skip", "failure"} {
+		t.Run(decision, func(t *testing.T) {
+			store, job, input := spendFixture(t, 500000)
+			attempt := admitSpend(t, store, job, input)
+			outcome := settlementOutcome(t, job)
+			if decision == "skip" {
+				var err error
+				outcome.Result, err = app.DecodeGenerationResult([]byte(`{"decision":"skip","reason":"not_relevant"}`), job)
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if decision == "failure" {
+				outcome = app.GenerationOutcome{Failure: app.GenerationRateLimited, NotBefore: time.Now().Add(time.Minute).Truncate(time.Microsecond).Add(123 * time.Nanosecond)}
+			}
+			for range 2 {
+				if ok, err := store.SettleGeneration(context.Background(), attempt, outcome, "req"); err != nil || !ok {
+					t.Fatalf("settle: %v %v", ok, err)
+				}
+			}
+			saved := storedSpend(t, store, attempt.ID)
+			if saved.Decision != outcome.Result.Decision() || saved.SkipReason != outcome.Result.Reason() {
+				t.Fatal("lost decision", saved)
+			}
+			if decision == "failure" {
+				if saved.NotBefore == nil || !saved.NotBefore.Equal(app.GenerationInstant(outcome.NotBefore)) {
+					t.Fatal("lost normalized hint", saved)
+				}
+				outcome.NotBefore = outcome.NotBefore.In(time.FixedZone("other", 3600))
+				if ok, err := store.SettleGeneration(context.Background(), attempt, outcome, "req"); err != nil || !ok {
+					t.Fatal(ok, err)
+				}
+				outcome.NotBefore = outcome.NotBefore.Add(-time.Microsecond)
+				if ok, err := store.SettleGeneration(context.Background(), attempt, outcome, "req"); err != nil || ok {
+					t.Fatal("conflicting hint accepted", ok, err)
+				}
+			}
+		})
+	}
+}
+
 func TestGenerationSettlementRollback(t *testing.T) {
 	for _, failure := range []string{"zero_rows", "after_write", "commit"} {
 		t.Run(failure, func(t *testing.T) {

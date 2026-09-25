@@ -62,6 +62,9 @@ func (o GenerationOutcome) Validate() error {
 	if (o.Result.Digest() != "") == (o.Failure != "") || o.Failure != "" && !o.Failure.Valid() {
 		return ErrGenerationOutput
 	}
+	if !o.NotBefore.IsZero() && (o.Failure == "" || !validGenerationOutcomeTime(o.NotBefore)) {
+		return ErrGenerationOutput
+	}
 	if (o.InputTokens == nil) != (o.OutputTokens == nil) || o.InputTokens != nil && (*o.InputTokens < 1 || *o.OutputTokens < 0) {
 		return ErrGenerationOutput
 	}
@@ -69,6 +72,10 @@ func (o GenerationOutcome) Validate() error {
 		return ErrGenerationOutput
 	}
 	return nil
+}
+
+func validGenerationOutcomeTime(value time.Time) bool {
+	return !value.IsZero() && value.UTC().Year() >= 1 && value.UTC().Year() <= 9999
 }
 
 const (

@@ -74,7 +74,7 @@ func TestMigrateGenerationOutputFromScheduling(t *testing.T) {
 	if err := store.Ready(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.db.QueryRowContext(ctx, `SELECT jsonb_agg(to_jsonb(a)-'output_digest' ORDER BY id)::text FROM generation_attempts a`).Scan(&attemptsAfter); err != nil || attemptsAfter != attemptsBefore {
+	if err := store.db.QueryRowContext(ctx, `SELECT jsonb_agg(to_jsonb(a)-'output_digest'-'decision'-'skip_reason'-'not_before' ORDER BY id)::text FROM generation_attempts a`).Scan(&attemptsAfter); err != nil || attemptsAfter != attemptsBefore {
 		t.Fatal("attempt history rewritten", err)
 	}
 	if err := store.db.QueryRowContext(ctx, `SELECT jsonb_agg(to_jsonb(j) ORDER BY id)::text FROM generation_jobs j`).Scan(&jobsAfter); err != nil || jobsAfter != jobsBefore {

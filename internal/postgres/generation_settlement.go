@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"time"
 
 	"github.com/SophearithSaing/stacktrace-api/internal/app"
 	"github.com/SophearithSaing/stacktrace-api/internal/llm"
@@ -23,6 +24,12 @@ func (s *Store) SettleGeneration(ctx context.Context, reserved app.GenerationAtt
 	outcome.InputTokens, outcome.OutputTokens = nil, nil
 	if outcome.Validate() != nil {
 		return false, invalidGeneration("outcome")
+	}
+	if !outcome.NotBefore.IsZero() {
+		outcome.NotBefore = app.GenerationInstant(outcome.NotBefore)
+		if outcome.NotBefore.IsZero() || outcome.Validate() != nil {
+			return false, invalidGeneration("outcome")
+		}
 	}
 	uncertain := outcome.Failure == app.GenerationTimeout || outcome.Failure == app.GenerationCancelled || outcome.Failure == app.GenerationAccountingUnsupported
 	if uncertain {
@@ -75,8 +82,12 @@ func (s *Store) SettleGeneration(ctx context.Context, reserved app.GenerationAtt
 		after.Status, after.FinishedAt, after.ProviderRequestID = app.AttemptFailed, &now, requestID
 		after.ErrorCode = string(outcome.Failure)
 		after.InputTokens, after.OutputTokens = outcome.InputTokens, outcome.OutputTokens
+		if !outcome.NotBefore.IsZero() {
+			after.NotBefore = &outcome.NotBefore
+		}
 		if outcome.Result.Digest() != "" {
 			after.Status, after.OutputDigest = app.AttemptSucceeded, outcome.Result.Digest()
+			after.Decision, after.SkipReason = outcome.Result.Decision(), outcome.Result.Reason()
 		}
 		if outcome.Failure == app.GenerationTimeout || outcome.Failure == app.GenerationCancelled {
 			after.Status = app.AttemptUnknown
@@ -84,6 +95,7 @@ func (s *Store) SettleGeneration(ctx context.Context, reserved app.GenerationAtt
 		if before.Status != app.AttemptReserved {
 			// FinishedAt is assigned by storage, not the caller's replay clock.
 			accepted = before.Status == after.Status && before.ErrorCode == after.ErrorCode && before.OutputDigest == after.OutputDigest &&
+				before.Decision == after.Decision && before.SkipReason == after.SkipReason && sameSettlementTime(before.NotBefore, after.NotBefore) &&
 				before.ProviderRequestID == after.ProviderRequestID && sameSettlementUsage(before.InputTokens, after.InputTokens) && sameSettlementUsage(before.OutputTokens, after.OutputTokens)
 			return nil
 		}
@@ -91,8 +103,9 @@ func (s *Store) SettleGeneration(ctx context.Context, reserved app.GenerationAtt
 			return invalidGeneration("outcome")
 		}
 		updated, err := q.queryer.ExecContext(ctx, `UPDATE generation_attempts SET status=$2,error_code=NULLIF($3,''),input_tokens=$4,output_tokens=$5,
-			output_digest=NULLIF($6,''),provider_request_id=NULLIF($7,''),finished_at=$8 WHERE id=$1 AND status='reserved'`,
-			id, after.Status, after.ErrorCode, after.InputTokens, after.OutputTokens, after.OutputDigest, requestID, now)
+			output_digest=NULLIF($6,''),provider_request_id=NULLIF($7,''),finished_at=$8,
+			decision=NULLIF($9,''),skip_reason=NULLIF($10,''),not_before=$11 WHERE id=$1 AND status='reserved'`,
+			id, after.Status, after.ErrorCode, after.InputTokens, after.OutputTokens, after.OutputDigest, requestID, now, after.Decision, after.SkipReason, after.NotBefore)
 		if err := generationClaimMutation(ctx, updated, err); err != nil {
 			return err
 		}
@@ -110,6 +123,10 @@ func sameGenerationReservation(a, b app.GenerationAttempt) bool {
 
 func sameSettlementUsage(a, b *int64) bool {
 	return a == nil && b == nil || a != nil && b != nil && *a == *b
+}
+
+func sameSettlementTime(a, b *time.Time) bool {
+	return a == nil && b == nil || a != nil && b != nil && a.Equal(*b)
 }
 
 // Absence is allowed (timeouts often have no response). Present IDs are bounded

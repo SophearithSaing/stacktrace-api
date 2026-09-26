@@ -109,6 +109,15 @@ func (q *Queries) lockGenerationCandidates(ctx context.Context, source generatio
 	if err != nil {
 		return nil, err
 	}
+	candidates, _, err := q.lockPreparedGenerationCandidates(ctx, source, ids, continuation, nil)
+	return candidates, err
+}
+
+// Discovery happens exactly once. Publication includes its publisher in both
+// sorted lock sets, but validates the pinned persona independently of the
+// currently selected candidate persona. No job locks may precede this helper.
+func (q *Queries) lockPreparedGenerationCandidates(ctx context.Context, source generationSource, ids []app.ID, continuation bool, publisher *app.GenerationJob) ([]generationCandidate, *app.AgentSettings, error) {
+	ids = append([]app.ID(nil), ids...)
 	if continuation {
 		ids = append(ids, source.actor)
 	}
@@ -124,43 +133,56 @@ func (q *Queries) lockGenerationCandidates(ctx context.Context, source generatio
 			continue
 		}
 		if err != nil {
-			return nil, databaseError(ctx, err)
+			return nil, nil, databaseError(ctx, err)
 		}
 		handles[id] = handle
 	}
 	if continuation && handles[source.actor] == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	var candidates []generationCandidate
+	var publisherSettings *app.AgentSettings
 	for _, id := range ids {
-		if id == source.actor || handles[id] == "" {
+		if (id == source.actor && publisher == nil) || handles[id] == "" {
 			continue
 		}
 		var settings app.AgentSettings
-		var policy, tags []byte
-		var persona app.Persona
+		var policy []byte
 		err := q.queryer.QueryRowContext(ctx, `SELECT s.agent_id,s.persona_version,s.enabled,
 			CASE WHEN octet_length(s.policy::text)<=8192 THEN s.policy END,s.next_post_at,
-			COALESCE(to_char(s.schedule_date,'YYYY-MM-DD'),''),s.remaining_slots,s.last_published_at,s.updated_at,
-			p.instructions,CASE WHEN octet_length(to_json(p.topic_tags)::text)<=4096 THEN to_json(p.topic_tags) END,p.created_at
-			FROM agent_settings s JOIN agent_personas p ON p.agent_id=s.agent_id AND p.version=s.persona_version
+			COALESCE(to_char(s.schedule_date,'YYYY-MM-DD'),''),s.remaining_slots,s.last_published_at,s.updated_at
+			FROM agent_settings s
 			WHERE s.agent_id=$1 FOR UPDATE OF s`, id).Scan(&settings.AgentID, &settings.PersonaVersion, &settings.Enabled, &policy, &settings.NextPostAt,
-			&settings.ScheduleDate, &settings.RemainingSlots, &settings.LastPublishedAt, &settings.UpdatedAt, &persona.Instructions, &tags, &persona.CreatedAt)
+			&settings.ScheduleDate, &settings.RemainingSlots, &settings.LastPublishedAt, &settings.UpdatedAt)
 		if errors.Is(databaseError(ctx, err), app.ErrNotFound) {
 			continue
 		}
 		if err != nil {
-			return nil, databaseError(ctx, err)
+			return nil, nil, databaseError(ctx, err)
 		}
 		settings.Policy, err = app.DecodeGenerationPolicy(policy)
-		persona.AgentID, persona.Version = id, settings.PersonaVersion
-		if err != nil || !settings.Enabled || settings.Validate() != nil || json.Unmarshal(tags, &persona.TopicTags) != nil || persona.Validate() != nil {
+		if err != nil || !settings.Enabled || settings.Validate() != nil || settings.RemainingSlots > 0 && settings.NextPostAt == nil {
 			continue
+		}
+		personaJob := app.GenerationJob{AgentID: id, PersonaVersion: settings.PersonaVersion}
+		if publisher != nil && id == publisher.AgentID {
+			if _, err := q.executionPersona(ctx, *publisher); err != nil {
+				return nil, nil, err
+			}
+			publisherSettings = &settings
+			continue
+		}
+		persona, err := q.executionPersona(ctx, personaJob)
+		if errors.Is(err, app.ErrGenerationOutput) || errors.Is(err, app.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, nil, err
 		}
 		if rank := generationCandidateRank(id, handles[id], persona.TopicTags, source); rank >= 0 {
 			candidates = append(candidates, generationCandidate{settings: settings, rank: rank})
 		}
 	}
 	sortGenerationCandidates(candidates)
-	return candidates, nil
+	return candidates, publisherSettings, nil
 }

@@ -76,3 +76,63 @@ func TestGenerationPublicationSourceCleanupRemainder(t *testing.T) {
 		})
 	}
 }
+
+func TestGenerationPublicationChildSourceRemovalWait(t *testing.T) {
+	for _, kind := range []app.GenerationTrigger{app.TriggerReply, app.TriggerRepost} {
+		t.Run(string(kind), func(t *testing.T) {
+			store, original, _ := spendFixture(t, 500000)
+			table, field := "replies", "source_reply_id"
+			if kind == app.TriggerRepost {
+				table, field = "reposts", "source_repost_id"
+			}
+			var source app.ID
+			if err := store.db.QueryRow(`SELECT id FROM `+table+` WHERE post_id=$1`, original.SourcePostID).Scan(&source); err != nil {
+				t.Fatal(err)
+			}
+			generationSQL(t, store, `UPDATE `+table+` SET created_at=$2 WHERE id=$1`, source, original.CreatedAt.Add(-time.Second))
+			job := contextJob(t, store, original, map[string]any{"trigger_kind": kind, field: source, "created_at": original.CreatedAt.Add(2 * time.Second), "available_at": original.AvailableAt.Add(2 * time.Second), "cooldown_key": string(app.NewID())})
+			input, _ := readGenerationContext(t, store, job)
+			attempt, output := publicationSettle(t, store, job, input, "A reply based on a removable child source")
+			ctx := context.Background()
+			blocker, err := store.db.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer blocker.Rollback()
+			// The remover owns post then child. Publication must wait on the post
+			// before taking any authority locks, then observe the committed removal.
+			if _, err := blocker.Exec(`SELECT id FROM posts WHERE id=$1 FOR UPDATE`, job.SourcePostID); err != nil {
+				t.Fatal(err)
+			}
+			var pid int
+			if err := blocker.QueryRow(`SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { _, err := store.PublishGeneration(ctx, job.ID, 1, attempt.ID, output); done <- err }()
+			waitForDatabaseBlock(t, store, pid)
+			if _, err := blocker.Exec(`SELECT id FROM `+table+` WHERE id=$1 FOR UPDATE NOWAIT`, source); err != nil {
+				t.Fatalf("child before post: %v", err)
+			}
+			if _, err := blocker.Exec(`SELECT id FROM generation_jobs WHERE id=$1 FOR UPDATE NOWAIT`, job.ID); err != nil {
+				t.Fatalf("job before post: %v", err)
+			}
+			query := `UPDATE replies SET deleted_at=clock_timestamp() WHERE id=$1`
+			if kind == app.TriggerRepost {
+				query = `DELETE FROM reposts WHERE id=$1`
+			}
+			if _, err := blocker.Exec(query, source); err != nil {
+				t.Fatal(err)
+			}
+			if err := blocker.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-done; !errors.Is(err, app.ErrDeleted) {
+				t.Fatalf("removed source won publication: %v", err)
+			}
+			if claimJob(t, store, job.ID).ResultReplyID != nil {
+				t.Fatal("removed source produced content")
+			}
+		})
+	}
+}

@@ -201,6 +201,24 @@ func TestGenerationPublicationLegacySuccessIsNotAuthority(t *testing.T) {
 	}
 }
 
+func TestGenerationPublicationExactAttemptAndLease(t *testing.T) {
+	store, job, attempt, output := publicationFixture(t, app.OutputReply, "Bound to one successful attempt")
+	other := contextJob(t, store, job, map[string]any{"created_at": job.CreatedAt.Add(2 * time.Second), "available_at": job.AvailableAt.Add(2 * time.Second), "cooldown_key": string(app.NewID())})
+	input, _ := readGenerationContext(t, store, other)
+	otherAttempt, _ := publicationSettle(t, store, other, input, output.Content().Body)
+	before := publicationCounts(t, store)
+	if _, err := store.PublishGeneration(context.Background(), job.ID, 1, otherAttempt.ID, output); !errors.Is(err, app.ErrNotFound) {
+		t.Fatalf("another job's success authorized publication: %v", err)
+	}
+	generationSQL(t, store, `UPDATE generation_jobs SET lease_version=2 WHERE id=$1`, job.ID)
+	if _, err := store.PublishGeneration(context.Background(), job.ID, 2, attempt.ID, output); !errors.Is(err, app.ErrGenerationOutput) {
+		t.Fatalf("old lease success authorized publication: %v", err)
+	}
+	if publicationCounts(t, store) != before {
+		t.Fatal("identity denial created content")
+	}
+}
+
 func TestGenerationPublicationWriteFailures(t *testing.T) {
 	for _, table := range []string{"posts", "replies", "post_tags", "generation_jobs", "agent_settings"} {
 		for _, failure := range []string{"zero_rows", "after_write", "commit"} {

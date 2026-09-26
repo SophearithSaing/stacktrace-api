@@ -64,6 +64,7 @@ func TestGenerationPublicationWaitRevalidation(t *testing.T) {
 				}
 			}
 			if stage == "attempt" {
+				assertEligibilityLock(t, store, `SELECT id FROM generation_jobs WHERE id=$1 FOR UPDATE`, job.ID, false)
 				cancel()
 				want = context.Canceled
 			} else if err := blocker.Commit(); err != nil {
@@ -73,6 +74,93 @@ func TestGenerationPublicationWaitRevalidation(t *testing.T) {
 				t.Fatalf("wait denial: %v want=%v", err, want)
 			}
 		})
+	}
+}
+
+func TestGenerationPublicationTagWaitPrecedesAuthorityLocks(t *testing.T) {
+	store, job, attempt, output := publicationFixture(t, app.OutputPost, "Sorted #Conflicting #Tags")
+	ctx := context.Background()
+	blocker, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Rollback()
+	if _, err := blocker.Exec(`INSERT INTO tags(id,slug,display_name) VALUES($1,'conflicting','Conflicting')`, app.NewID()); err != nil {
+		t.Fatal(err)
+	}
+	var pid int
+	if err := blocker.QueryRow(`SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	callCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := store.PublishGeneration(callCtx, job.ID, 1, attempt.ID, output); done <- err }()
+	waitForDatabaseBlock(t, store, pid)
+	for _, lock := range []struct {
+		query string
+		id    app.ID
+	}{
+		{`SELECT id FROM accounts WHERE id=$1 FOR UPDATE NOWAIT`, job.AgentID},
+		{`SELECT agent_id FROM agent_settings WHERE agent_id=$1 FOR UPDATE NOWAIT`, job.AgentID},
+		{`SELECT id FROM generation_jobs WHERE id=$1 FOR UPDATE NOWAIT`, job.ID},
+	} {
+		if _, err := blocker.Exec(lock.query, lock.id); err != nil {
+			t.Fatalf("authority lock before tag conflict: %v", err)
+		}
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+}
+
+func TestGenerationPublicationRootWaitPrecedesParentLock(t *testing.T) {
+	store, root, rootAttempt, rootOutput := publicationFixture(t, app.OutputPost, "@root_lock_child a real continuation")
+	childAgent := socialAgent(t, store, "root_lock_child", func(p *app.GenerationPolicy) { p.DailyTokenBudget = 500000 })
+	ctx := context.Background()
+	if _, err := store.PublishGeneration(ctx, root.ID, 1, rootAttempt.ID, rootOutput); err != nil {
+		t.Fatal(err)
+	}
+	var job app.GenerationJob
+	for _, candidate := range socialJobs(t, store) {
+		if candidate.RootJobID == root.ID && candidate.AgentID == childAgent.AgentID {
+			job = candidate
+		}
+	}
+	if job.ID == "" {
+		t.Fatal("missing real continuation")
+	}
+	generationSQL(t, store, `UPDATE generation_jobs SET status='running',lease_version=1,lease_expires_at=clock_timestamp()+interval '1 minute' WHERE id=$1`, job.ID)
+	job = claimJob(t, store, job.ID)
+	input, _ := readGenerationContext(t, store, job)
+	attempt, output := publicationSettle(t, store, job, input, "A continuation waiting for its root")
+	blocker, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Rollback()
+	if _, err := blocker.Exec(`SELECT id FROM generation_jobs WHERE id=$1 FOR UPDATE`, root.ID); err != nil {
+		t.Fatal(err)
+	}
+	var pid int
+	if err := blocker.QueryRow(`SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	callCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := store.PublishGeneration(callCtx, job.ID, 1, attempt.ID, output); done <- err }()
+	waitForDatabaseBlock(t, store, pid)
+	if _, err := blocker.Exec(`SELECT id FROM generation_jobs WHERE id=$1 FOR UPDATE NOWAIT`, job.ID); err != nil {
+		t.Fatalf("parent before root: %v", err)
+	}
+	if _, err := blocker.Exec(`SELECT id FROM generation_attempts WHERE id=$1 FOR UPDATE NOWAIT`, attempt.ID); err != nil {
+		t.Fatalf("attempt before root: %v", err)
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
 	}
 }
 

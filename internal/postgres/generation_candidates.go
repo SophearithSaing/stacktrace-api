@@ -161,11 +161,14 @@ func (q *Queries) lockPreparedGenerationCandidates(ctx context.Context, source g
 			return nil, nil, databaseError(ctx, err)
 		}
 		settings.Policy, err = app.DecodeGenerationPolicy(policy)
-		if err != nil || !settings.Enabled || settings.Validate() != nil || settings.RemainingSlots > 0 && settings.NextPostAt == nil {
+		if err != nil || !settings.Enabled || settings.Validate() != nil {
 			continue
 		}
 		personaJob := app.GenerationJob{AgentID: id, PersonaVersion: settings.PersonaVersion}
 		if publisher != nil && id == publisher.AgentID {
+			if settings.RemainingSlots > 0 && settings.NextPostAt == nil {
+				continue
+			}
 			if _, err := q.executionPersona(ctx, *publisher); err != nil {
 				return nil, nil, err
 			}

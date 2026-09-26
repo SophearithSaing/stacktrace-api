@@ -1,5 +1,4 @@
-// Package worker provides a check-only configuration preflight. It does not
-// schedule, claim, generate or publish work, and has no provider client.
+// Package worker provides read-only preflight and bounded generation execution.
 package worker
 
 import (

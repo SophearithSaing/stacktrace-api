@@ -51,14 +51,25 @@ func (f GenerationFailure) StopsExecution() bool {
 // request reservation. Unknown usage has nil counts and retains the reservation.
 // Unknown execution (timeout/cancellation/crash) always uses unknown usage.
 type GenerationOutcome struct {
-	Result       GenerationResult
-	Failure      GenerationFailure
-	NotBefore    time.Time
-	InputTokens  *int64
-	OutputTokens *int64
+	// ProviderRequestID is optional correlation metadata, not provider error text.
+	// Settlement currently accepts it as a separate argument.
+	ProviderRequestID string
+	Result            GenerationResult
+	Failure           GenerationFailure
+	NotBefore         time.Time
+	InputTokens       *int64
+	OutputTokens      *int64
 }
 
 func (o GenerationOutcome) Validate() error {
+	if len(o.ProviderRequestID) > 256 {
+		return ErrGenerationOutput
+	}
+	for _, c := range o.ProviderRequestID {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.' || c == ':') {
+			return ErrGenerationOutput
+		}
+	}
 	if (o.Result.Digest() != "") == (o.Failure != "") || o.Failure != "" && !o.Failure.Valid() {
 		return ErrGenerationOutput
 	}

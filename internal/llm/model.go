@@ -1,5 +1,4 @@
-// Package llm defines the selected provider contract. It does not yet execute
-// requests; no provider registry, credentials or HTTP adapter lives here.
+// Package llm implements the fixed Together generation contract and HTTP adapter.
 package llm
 
 import (

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/SophearithSaing/stacktrace-api/internal/config"
+	"github.com/SophearithSaing/stacktrace-api/internal/llm"
 	"github.com/SophearithSaing/stacktrace-api/internal/postgres"
 	"github.com/SophearithSaing/stacktrace-api/internal/worker"
 )
@@ -25,25 +26,50 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, output io.Writer) error {
-	if len(args) != 1 || (args[0] != "check" && args[0] != "schedule") {
-		return errors.New("usage: worker check | schedule (read-only preflight | bounded enqueue pass; no generation execution)")
+	if len(args) != 1 || (args[0] != "check" && args[0] != "schedule" && args[0] != "execute") {
+		return errors.New("usage: worker check | schedule | execute (read-only preflight | bounded enqueue pass | bounded generation pass)")
 	}
 	// Includes opening the database, not just the preflight queries.
 	deadline := 10 * time.Second
+	role := config.Database
 	if args[0] == "schedule" {
 		deadline = 35 * time.Second
 	}
+	if args[0] == "execute" {
+		deadline, role = worker.ExecutionTimeout, config.WorkerExecute
+	}
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
-	cfg, err := config.Load(config.Database)
+	cfg, err := config.Load(role)
 	if err != nil {
+		if role == config.WorkerExecute {
+			return worker.ExecutionConfiguration
+		}
 		return err
+	}
+	// Construction is local and cannot make a request. No other command reads
+	// credentials or even constructs the provider.
+	var provider *llm.Together
+	if role == config.WorkerExecute {
+		provider, err = llm.NewTogether(cfg.TogetherAPIKey)
+		if err != nil {
+			return worker.ExecutionConfiguration
+		}
 	}
 	store, err := postgres.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
+		if role == config.WorkerExecute {
+			if ctx.Err() != nil {
+				return worker.ExecutionStopped
+			}
+			return worker.ExecutionStorage
+		}
 		return err
 	}
 	defer store.Close()
+	if role == config.WorkerExecute {
+		return execute(ctx, store, provider, output)
+	}
 	if args[0] == "schedule" {
 		result, err := schedule(ctx, store)
 		return reportSchedule(output, result, err)

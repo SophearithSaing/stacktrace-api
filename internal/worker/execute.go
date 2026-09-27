@@ -68,7 +68,10 @@ func execute(ctx context.Context, store ExecutionStore, provider app.GenerationP
 	if err != nil {
 		var safe ExecutionError
 		if errors.As(err, &safe) {
-			return r.summary, safe
+			switch safe {
+			case ExecutionStorage, ExecutionStopped, ExecutionCredentials, ExecutionConfiguration, ExecutionAccounting:
+				return r.summary, safe
+			}
 		}
 		if ctx.Err() != nil {
 			return r.summary, ExecutionStopped

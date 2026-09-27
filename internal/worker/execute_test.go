@@ -144,7 +144,11 @@ func fakeSuccess(t *testing.T, s *executionFake) app.GenerationOutcome {
 func TestExecuteSequenceAndNilProbe(t *testing.T) {
 	s := executeFixture(t)
 	s.nilClaims = 2
-	result, err := Execute(context.Background(), s, providerFunc(func(_ context.Context, _ app.GenerationRequest) app.GenerationOutcome {
+	result, err := Execute(context.Background(), s, providerFunc(func(ctx context.Context, _ app.GenerationRequest) app.GenerationOutcome {
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) > providerTimeout {
+			t.Fatal("provider call is not bounded")
+		}
 		if s.attempt == nil || s.attempt.Status != app.AttemptReserved {
 			t.Fatal("call before commit")
 		}
@@ -161,7 +165,7 @@ func TestExecuteSequenceAndNilProbe(t *testing.T) {
 }
 
 func TestExecuteDenialsAndSafeFailures(t *testing.T) {
-	for _, name := range []string{"ambiguous_commit", "already_admitted", "recovery_required", "budget_exhausted", "context", "prompt", "deleted", "publication", "storage"} {
+	for _, name := range []string{"ambiguous_commit", "already_admitted", "recovery_required", "budget_exhausted", "context", "prompt", "deleted", "publication", "publication_conflict", "publication_output", "storage", "arbitrary_code"} {
 		t.Run(name, func(t *testing.T) {
 			s := executeFixture(t)
 			calls := 0
@@ -178,25 +182,31 @@ func TestExecuteDenialsAndSafeFailures(t *testing.T) {
 				s.contextErr = app.ErrDeleted
 			case "publication":
 				s.publishErr = app.ErrForbidden
+			case "publication_conflict":
+				s.publishErr = app.ErrConflict
+			case "publication_output":
+				s.publishErr = app.ErrGenerationOutput
 			case "storage":
 				s.contextErr = errors.New("secret storage error")
+			case "arbitrary_code":
+				s.contextErr = ExecutionError("secret arbitrary code")
 			}
 			_, err := Execute(context.Background(), s, providerFunc(func(context.Context, app.GenerationRequest) app.GenerationOutcome { calls++; return fakeSuccess(t, s) }))
 			wantCalls := 0
-			if name == "publication" {
+			if strings.HasPrefix(name, "publication") {
 				wantCalls = 1
 			}
 			if calls != wantCalls {
 				t.Fatal(calls)
 			}
-			if name == "ambiguous_commit" || name == "storage" {
+			if name == "ambiguous_commit" || name == "storage" || name == "arbitrary_code" {
 				if err != ExecutionStorage || strings.Contains(err.Error(), "secret") {
 					t.Fatal(err)
 				}
 			} else if err != nil {
 				t.Fatal(err)
 			}
-			if name == "context" || name == "prompt" || name == "deleted" || name == "publication" {
+			if name == "context" || name == "prompt" || name == "deleted" || strings.HasPrefix(name, "publication") {
 				if s.denied != 1 {
 					t.Fatal("unacknowledged denial")
 				}

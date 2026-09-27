@@ -131,6 +131,12 @@ func TestWorkerExecutionSkipBudgetAndStops(t *testing.T) {
 			} else if err == nil || result.Probes != 1 || saved.Status != app.JobFailed || result.Published != 0 {
 				t.Fatal(result, saved, err)
 			}
+			if mode == "normalized_accounting" {
+				attempt, readErr := store.LatestGenerationAttempt(context.Background(), job.ID)
+				if readErr != nil || attempt == nil || attempt.ErrorCode != "unsupported_accounting" || attempt.AccountedTokens() != 132096 {
+					t.Fatal(attempt, readErr)
+				}
+			}
 		})
 	}
 }
@@ -286,10 +292,10 @@ func TestWorkerExecutionConcurrentClaimsAndBudget(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			store, job := workerFixture(t, app.OutputReply, 500000)
 			if mode == "budget" {
-				history := contextJob(t, store, job, map[string]any{"cooldown_key": string(app.NewID())})
+				history := contextJob(t, store, job, map[string]any{"cooldown_key": string(app.NewID()), "created_at": time.Now().Add(-4 * time.Minute)})
 				spendHistory(t, store, history, 1, 1, time.Now().Add(-time.Second), app.AttemptUnknown, 300000, nil, nil)
-				for range 3 {
-					contextJob(t, store, job, map[string]any{"cooldown_key": string(app.NewID()), "lease_expires_at": time.Now().Add(-time.Second)})
+				for n := range 3 {
+					contextJob(t, store, job, map[string]any{"cooldown_key": string(app.NewID()), "created_at": time.Now().Add(-time.Duration(120+2*n) * time.Second), "lease_expires_at": time.Now().Add(-time.Second)})
 				}
 			}
 			var calls atomic.Int32
@@ -316,6 +322,12 @@ func TestWorkerExecutionConcurrentClaimsAndBudget(t *testing.T) {
 			if calls.Load() != 1 {
 				t.Fatal("duplicate or over-budget calls", calls.Load())
 			}
+			if mode == "budget" {
+				var denied int
+				if err := store.db.QueryRow(`SELECT count(*) FROM generation_jobs WHERE reason_code='budget_exhausted'`).Scan(&denied); err != nil || denied != 3 {
+					t.Fatal("expected budget denial, not an unrelated policy denial", denied, err)
+				}
+			}
 		})
 	}
 }
@@ -338,5 +350,40 @@ func TestWorkerBridgeDenialRollback(t *testing.T) {
 				t.Fatal(status, err)
 			}
 		})
+	}
+}
+
+func TestWorkerExecutionBoundedProbesAndCleanup(t *testing.T) {
+	store, job := workerFixture(t, app.OutputReply, 500000)
+	// This removed repost consumes one probe without returning a claimed job.
+	removed := contextJob(t, store, job, map[string]any{"trigger_kind": "repost", "source_repost_id": nil,
+		"cooldown_key": string(app.NewID()), "created_at": time.Now().Add(-3 * time.Minute),
+		"available_at": time.Now().Add(-170 * time.Second), "lease_expires_at": time.Now().Add(-time.Second)})
+	for n := range 9 {
+		contextJob(t, store, job, map[string]any{"cooldown_key": string(app.NewID()), "created_at": time.Now().Add(-time.Duration(120+2*n) * time.Second), "lease_expires_at": time.Now().Add(-time.Second)})
+	}
+	result, err := worker.Execute(context.Background(), store, workerProvider(func(_ context.Context, req app.GenerationRequest) app.GenerationOutcome {
+		return workerOutput(t, req, true)
+	}))
+	if err != nil || result.Probes != 8 || result.Calls != 7 || result.Skipped != 7 || claimJob(t, store, removed.ID).Status != app.JobCancelled {
+		t.Fatal(result, err)
+	}
+}
+
+func TestWorkerExecutionUnrecoveredReservation(t *testing.T) {
+	store, job := workerFixture(t, app.OutputReply, 500000)
+	// Fill the recovery batch with older reservations whose jobs aren't due for
+	// reclaim yet. Their old attempt fences still make recovery safe.
+	for n := range generationCleanupBatch {
+		old := contextJob(t, store, job, map[string]any{"cooldown_key": string(app.NewID()), "lease_version": 2})
+		spendHistory(t, store, old, 1, 1, time.Now().Add(-time.Duration(n+2)*time.Second), app.AttemptReserved, 132096, nil, nil)
+	}
+	id := spendHistory(t, store, job, 1, 1, time.Now().Add(-time.Second), app.AttemptReserved, 132096, nil, nil)
+	result, err := worker.Execute(context.Background(), store, workerProvider(func(context.Context, app.GenerationRequest) app.GenerationOutcome {
+		t.Fatal("unrecovered reservation granted call permission")
+		return app.GenerationOutcome{}
+	}))
+	if err != nil || result.Recovered != generationCleanupBatch || result.Calls != 0 || result.Denied != 1 || storedSpend(t, store, id).Status != app.AttemptReserved {
+		t.Fatal(result, err)
 	}
 }

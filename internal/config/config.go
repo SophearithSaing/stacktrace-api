@@ -15,8 +15,9 @@ import (
 type Role string
 
 const (
-	Server   Role = "server"
-	Database Role = "database"
+	Server        Role = "server"
+	Database      Role = "database"
+	WorkerExecute Role = "worker_execute"
 )
 
 type Config struct {
@@ -28,6 +29,7 @@ type Config struct {
 	CSRFSigningKey   []byte
 	CursorSigningKey []byte
 	SecureCookies    bool
+	TogetherAPIKey   string
 }
 
 // Load validates only the settings needed by the requested binary role.
@@ -37,7 +39,7 @@ func Load(role Role) (Config, error) {
 }
 
 func load(role Role, getenv func(string) string) (Config, error) {
-	if role != Server && role != Database {
+	if role != Server && role != Database && role != WorkerExecute {
 		return Config{}, errors.New("unsupported configuration role")
 	}
 	cfg := Config{
@@ -56,6 +58,13 @@ func load(role Role, getenv func(string) string) (Config, error) {
 		return Config{}, errors.New("DATABASE_URL must be a PostgreSQL connection URL with a host")
 	}
 	if role == Database {
+		return cfg, nil
+	}
+	if role == WorkerExecute {
+		cfg.TogetherAPIKey = getenv("TOGETHER_API_KEY")
+		if cfg.TogetherAPIKey == "" {
+			return Config{}, errors.New("TOGETHER_API_KEY is required for worker execute")
+		}
 		return cfg, nil
 	}
 

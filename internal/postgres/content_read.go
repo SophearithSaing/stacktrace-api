@@ -60,6 +60,7 @@ func (q *Queries) hydratePosts(ctx context.Context, ids []app.ID, viewer app.ID)
 	queryCtx, cancel := q.queryContext(ctx)
 	defer cancel()
 	rows, err := q.queryer.QueryContext(queryCtx, `SELECT p.id,p.body,p.code_language,p.code_filename,p.code_source,p.is_spicy,p.created_at,
+		EXISTS(SELECT 1 FROM generation_jobs g WHERE g.result_post_id=p.id AND g.status='succeeded'),
 		a.id,a.type,a.handle,a.display_name,a.initials,a.bio,a.role_label,a.status_text,a.specialty,a.appearance_key,a.verified_at,a.created_at,a.updated_at,a.disabled_at,
 		qp.id,qp.deleted_at,qa.id,qa.type,qa.handle,qa.display_name,qa.initials,qa.bio,qa.role_label,qa.status_text,qa.specialty,qa.appearance_key,qa.verified_at,qa.created_at,qa.updated_at,qa.disabled_at,qp.body
 		FROM posts p JOIN accounts a ON a.id=p.author_id
@@ -78,6 +79,7 @@ func (q *Queries) hydratePosts(ctx context.Context, ids []app.ID, viewer app.ID)
 		var qa accountNulls
 		var quoteBody sql.NullString
 		err = rows.Scan(&p.ID, &p.Content.Body, &language, &filename, &source, &p.IsSpicy, &p.CreatedAt,
+			&p.IsGenerated,
 			&p.Author.ID, &p.Author.Type, &p.Author.Handle, &p.Author.DisplayName, &p.Author.Initials, &p.Author.Bio, &p.Author.RoleLabel, &p.Author.StatusText, &p.Author.Specialty, &p.Author.AppearanceKey, &p.Author.VerifiedAt, &p.Author.CreatedAt, &p.Author.UpdatedAt, &p.Author.DisabledAt,
 			&quoteID, &quoteDeleted, &qa.id, &qa.accountType, &qa.handle, &qa.displayName, &qa.initials, &qa.bio, &qa.roleLabel, &qa.statusText, &qa.specialty, &qa.appearanceKey, &qa.verifiedAt, &qa.createdAt, &qa.updatedAt, &qa.disabledAt, &quoteBody)
 		if err != nil {
@@ -273,6 +275,7 @@ func (q *Queries) hydrateReplyPreviews(ctx context.Context, ids []string, posts 
 		post.ReplyPreview.Ceiling = ceiling
 	}
 	rows, err := q.queryer.QueryContext(queryCtx, `SELECT r.id,r.post_id,r.body,r.created_at,r.n,
+		EXISTS(SELECT 1 FROM generation_jobs g WHERE g.result_reply_id=r.id AND g.status='succeeded'),
 		a.id,a.type,a.handle,a.display_name,a.initials,a.bio,a.role_label,a.status_text,a.specialty,a.appearance_key,a.verified_at,a.created_at,a.updated_at,a.disabled_at
 		FROM unnest($1::uuid[]) requested(id)
 		CROSS JOIN LATERAL (
@@ -288,7 +291,7 @@ func (q *Queries) hydrateReplyPreviews(ctx context.Context, ids []string, posts 
 	for rows.Next() {
 		var r app.Reply
 		var n int
-		if err = rows.Scan(&r.ID, &r.PostID, &r.Body, &r.CreatedAt, &n, &r.Author.ID, &r.Author.Type, &r.Author.Handle, &r.Author.DisplayName, &r.Author.Initials, &r.Author.Bio, &r.Author.RoleLabel, &r.Author.StatusText, &r.Author.Specialty, &r.Author.AppearanceKey, &r.Author.VerifiedAt, &r.Author.CreatedAt, &r.Author.UpdatedAt, &r.Author.DisabledAt); err != nil {
+		if err = rows.Scan(&r.ID, &r.PostID, &r.Body, &r.CreatedAt, &n, &r.IsGenerated, &r.Author.ID, &r.Author.Type, &r.Author.Handle, &r.Author.DisplayName, &r.Author.Initials, &r.Author.Bio, &r.Author.RoleLabel, &r.Author.StatusText, &r.Author.Specialty, &r.Author.AppearanceKey, &r.Author.VerifiedAt, &r.Author.CreatedAt, &r.Author.UpdatedAt, &r.Author.DisabledAt); err != nil {
 			rows.Close()
 			return databaseError(queryCtx, err)
 		}
@@ -355,7 +358,9 @@ func (s *Store) ListReplies(ctx context.Context, postID app.ID, window app.ReadW
 			positionTime = window.Position.Timestamp
 			positionID = window.Position.ID
 		}
-		query := fmt.Sprintf(`SELECT r.id,r.post_id,r.body,r.created_at,a.id,a.type,a.handle,a.display_name,a.initials,a.bio,a.role_label,a.status_text,a.specialty,a.appearance_key,a.verified_at,a.created_at,a.updated_at,a.disabled_at FROM replies r JOIN accounts a ON a.id=r.author_id WHERE r.post_id=$1 AND r.deleted_at IS NULL AND r.created_at<=$2 AND (NOT $3 OR (r.created_at,r.id) %s ($4,$5)) ORDER BY r.created_at %s,r.id %s LIMIT $6`, op, order, order)
+		query := fmt.Sprintf(`SELECT r.id,r.post_id,r.body,r.created_at,
+			EXISTS(SELECT 1 FROM generation_jobs g WHERE g.result_reply_id=r.id AND g.status='succeeded'),
+			a.id,a.type,a.handle,a.display_name,a.initials,a.bio,a.role_label,a.status_text,a.specialty,a.appearance_key,a.verified_at,a.created_at,a.updated_at,a.disabled_at FROM replies r JOIN accounts a ON a.id=r.author_id WHERE r.post_id=$1 AND r.deleted_at IS NULL AND r.created_at<=$2 AND (NOT $3 OR (r.created_at,r.id) %s ($4,$5)) ORDER BY r.created_at %s,r.id %s LIMIT $6`, op, order, order)
 		rows, err := q.queryer.QueryContext(queryCtx, query, parsed, ceiling, hasPosition, positionTime, positionID, window.Limit+1)
 		if err != nil {
 			return databaseError(queryCtx, err)
@@ -363,7 +368,7 @@ func (s *Store) ListReplies(ctx context.Context, postID app.ID, window app.ReadW
 		defer rows.Close()
 		for rows.Next() {
 			var r app.Reply
-			if err = rows.Scan(&r.ID, &r.PostID, &r.Body, &r.CreatedAt, &r.Author.ID, &r.Author.Type, &r.Author.Handle, &r.Author.DisplayName, &r.Author.Initials, &r.Author.Bio, &r.Author.RoleLabel, &r.Author.StatusText, &r.Author.Specialty, &r.Author.AppearanceKey, &r.Author.VerifiedAt, &r.Author.CreatedAt, &r.Author.UpdatedAt, &r.Author.DisabledAt); err != nil {
+			if err = rows.Scan(&r.ID, &r.PostID, &r.Body, &r.CreatedAt, &r.IsGenerated, &r.Author.ID, &r.Author.Type, &r.Author.Handle, &r.Author.DisplayName, &r.Author.Initials, &r.Author.Bio, &r.Author.RoleLabel, &r.Author.StatusText, &r.Author.Specialty, &r.Author.AppearanceKey, &r.Author.VerifiedAt, &r.Author.CreatedAt, &r.Author.UpdatedAt, &r.Author.DisabledAt); err != nil {
 				rows.Close()
 				return databaseError(queryCtx, err)
 			}

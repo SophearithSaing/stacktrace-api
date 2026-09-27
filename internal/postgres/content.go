@@ -134,21 +134,52 @@ func (q *Queries) insertTags(ctx context.Context, postID app.ID, tags []app.Tag)
 	tags = append([]app.Tag(nil), tags...)
 	sort.Slice(tags, func(i, j int) bool { return tags[i].Slug < tags[j].Slug })
 	for _, tag := range tags {
-		queryCtx, cancel := q.queryContext(ctx)
-		tagID := app.NewID()
-		_, err := q.queryer.ExecContext(queryCtx, `INSERT INTO tags(id,slug,display_name) VALUES($1,$2,$3) ON CONFLICT(slug) DO NOTHING`, tagID, tag.Slug, tag.DisplayName)
-		if err == nil {
-			err = q.queryer.QueryRowContext(queryCtx, `SELECT id FROM tags WHERE slug=$1`, tag.Slug).Scan(&tagID)
-		}
-		if err == nil {
-			_, err = q.queryer.ExecContext(queryCtx, `INSERT INTO post_tags(post_id,tag_id) VALUES($1,$2)`, postID, tagID)
-		}
+		id, err := q.resolveTag(ctx, tag)
 		if err != nil {
-			mapped := databaseError(queryCtx, err)
-			cancel()
-			return mapped
+			return err
 		}
-		cancel()
+		if err := q.linkTags(ctx, postID, []app.ID{id}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Resolve sorted uniqueness conflicts before publication takes agent locks.
+// New tags are provisional and must be rolled back if publication is denied.
+func (q *Queries) resolveTags(ctx context.Context, tags []app.Tag) ([]app.ID, error) {
+	tags = append([]app.Tag(nil), tags...)
+	sort.Slice(tags, func(i, j int) bool { return tags[i].Slug < tags[j].Slug })
+	var ids []app.ID
+	for _, tag := range tags {
+		tagID, err := q.resolveTag(ctx, tag)
+		if err != nil {
+			return nil, err
+		}
+		ids = append(ids, tagID)
+	}
+	return ids, nil
+}
+
+func (q *Queries) resolveTag(ctx context.Context, tag app.Tag) (app.ID, error) {
+	ctx, cancel := q.queryContext(ctx)
+	defer cancel()
+	id := app.NewID()
+	_, err := q.queryer.ExecContext(ctx, `INSERT INTO tags(id,slug,display_name) VALUES($1,$2,$3) ON CONFLICT(slug) DO NOTHING`, id, tag.Slug, tag.DisplayName)
+	if err == nil {
+		err = q.queryer.QueryRowContext(ctx, `SELECT id FROM tags WHERE slug=$1`, tag.Slug).Scan(&id)
+	}
+	return id, databaseError(ctx, err)
+}
+
+func (q *Queries) linkTags(ctx context.Context, postID app.ID, ids []app.ID) error {
+	ctx, cancel := q.queryContext(ctx)
+	defer cancel()
+	for _, id := range ids {
+		result, err := q.queryer.ExecContext(ctx, `INSERT INTO post_tags(post_id,tag_id) VALUES($1,$2)`, postID, id)
+		if err := generationClaimMutation(ctx, result, err); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -258,8 +289,9 @@ func (q *Queries) replyByID(ctx context.Context, id app.ID) (app.Reply, bool, er
 	var r app.Reply
 	var deleted, parentDeleted *time.Time
 	err := q.queryer.QueryRowContext(queryCtx, `SELECT r.id,r.post_id,r.body,r.created_at,r.deleted_at,p.deleted_at,
+		EXISTS(SELECT 1 FROM generation_jobs g WHERE g.result_reply_id=r.id AND g.status='succeeded'),
 		a.id,a.type,a.handle,a.display_name,a.initials,a.bio,a.role_label,a.status_text,a.specialty,a.appearance_key,a.verified_at,a.created_at,a.updated_at,a.disabled_at
-		FROM replies r JOIN posts p ON p.id=r.post_id JOIN accounts a ON a.id=r.author_id WHERE r.id=$1`, id).Scan(&r.ID, &r.PostID, &r.Body, &r.CreatedAt, &deleted, &parentDeleted, &r.Author.ID, &r.Author.Type, &r.Author.Handle, &r.Author.DisplayName, &r.Author.Initials, &r.Author.Bio, &r.Author.RoleLabel, &r.Author.StatusText, &r.Author.Specialty, &r.Author.AppearanceKey, &r.Author.VerifiedAt, &r.Author.CreatedAt, &r.Author.UpdatedAt, &r.Author.DisabledAt)
+		FROM replies r JOIN posts p ON p.id=r.post_id JOIN accounts a ON a.id=r.author_id WHERE r.id=$1`, id).Scan(&r.ID, &r.PostID, &r.Body, &r.CreatedAt, &deleted, &parentDeleted, &r.IsGenerated, &r.Author.ID, &r.Author.Type, &r.Author.Handle, &r.Author.DisplayName, &r.Author.Initials, &r.Author.Bio, &r.Author.RoleLabel, &r.Author.StatusText, &r.Author.Specialty, &r.Author.AppearanceKey, &r.Author.VerifiedAt, &r.Author.CreatedAt, &r.Author.UpdatedAt, &r.Author.DisabledAt)
 	if err != nil {
 		return app.Reply{}, false, databaseError(queryCtx, err)
 	}

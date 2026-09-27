@@ -117,6 +117,8 @@ class RunnerTests(unittest.TestCase):
             CSRF_SIGNING_KEY="invalid",
             CURSOR_SIGNING_KEY="invalid",
             PGSERVICE="invalid",
+            TOGETHER_API_KEY="ambient-provider-key-must-not-be-used",
+            STACKTRACE_GENERATION_SMOKE="ambient-harness-must-not-be-used",
         )
         print(f"Lifecycle verification checkout: {cls.checkout}", flush=True)
 
@@ -128,7 +130,7 @@ class RunnerTests(unittest.TestCase):
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            timeout=180,
+            timeout=600,
             check=False,
         )
         self.assertEqual(result.returncode, expected, result.stdout)
@@ -338,7 +340,13 @@ class RunnerTests(unittest.TestCase):
                 self.assertIn("visited=2 invalid=1 enqueued=1", output)
                 self.assertIn("Live trigger smoke passed", output)
                 self.assertIn("Schedule restart verification passed", output)
-                self.assertEqual(output.count("API ready:"), 2, output)
+                self.assertIn("Fake-provider execution passed", output)
+                self.assertIn("Execution verified after API restart", output)
+                self.assertEqual(output.count("calls=1 recovered=0 expired=0 published=1"), 4, output)
+                self.assertEqual(output.count("retried=1 denied=0"), 1, output)
+                self.assertEqual(output.count("Execution pass complete: probes=8 claimed=0 calls=0"), 4, output)
+                self.assertNotIn(self.env["TOGETHER_API_KEY"], output)
+                self.assertEqual(output.count("API ready:"), 3, output)
             tests = [
                 pool.submit(self.command, "make", "test", "TEST_ARGS=-run TestSeed -v")
                 for _ in range(2)
@@ -368,6 +376,8 @@ class RunnerTests(unittest.TestCase):
             self.assertFalse(running(state / "job.pid"))
             self.assertFalse((state / "password").exists())
             self.assertFalse((state / "worker").exists())
+            self.assertFalse((state / "worker.test").exists())
+            self.assertFalse((state / "generation-fixture.json").exists())
             self.assert_database_removed(state)
             fixture = json.loads((state / "smoke-fixture.json").read_text())
             self.assertEqual(
@@ -378,6 +388,41 @@ class RunnerTests(unittest.TestCase):
                 },
             )
             self.assertEqual((state / "smoke-fixture.json").stat().st_mode & 0o777, 0o600)
+            self.command("bash", "scripts/dev.sh", "clean-run", str(state))
+        finally:
+            smoke.write_text(original)
+
+    def test_execution_restart_failure_cleans_harness_and_fixtures(self):
+        smoke = self.checkout / "scripts/smoke_generation.py"
+        original = smoke.read_text()
+        try:
+            # Reach the third API startup with all new private fixtures present,
+            # then fail to exercise the same ownership-aware cleanup path.
+            smoke.write_text(
+                'import os, sys\nfrom pathlib import Path\n'
+                'if len(sys.argv) > 2 and sys.argv[2] == "execute-verify":\n'
+                '    state = Path(sys.argv[1])\n'
+                '    for name in ("generation-fixture.json", "execution-command.json", "execution-fixture.json"):\n'
+                '        assert (state / name).stat().st_mode & 0o777 == 0o600\n'
+                '    assert not os.environ.get("TOGETHER_API_KEY")\n'
+                '    assert not os.environ.get("STACKTRACE_GENERATION_SMOKE")\n'
+                '    assert (state / "worker.test").is_file()\n'
+                '    print("Private execution fixtures verified", flush=True)\n'
+                '    raise SystemExit(77)\n'
+                + original
+            )
+            output = self.command("make", "smoke", expected=2)
+            self.assertEqual(output.count("API ready:"), 3, output)
+            self.assertIn("Fake-provider execution passed", output)
+            self.assertIn("Private execution fixtures verified", output)
+            runs = list((self.checkout / ".dev/runs").iterdir())
+            self.assertEqual(len(runs), 1)
+            state = runs[0]
+            self.assertFalse(running(state / "api.pid"))
+            self.assertFalse(running(state / "job.pid"))
+            for name in ("password", "worker", "worker.test", "generation-fixture.json", "execution-command.json", "execution-fixture.json"):
+                self.assertFalse((state / name).exists(), name)
+            self.assert_database_removed(state)
             self.command("bash", "scripts/dev.sh", "clean-run", str(state))
         finally:
             smoke.write_text(original)

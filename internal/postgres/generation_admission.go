@@ -28,6 +28,19 @@ func (q *Queries) admitGenerationSource(ctx context.Context, source generationSo
 	if err != nil {
 		return 0, err
 	}
+	var root app.GenerationJob
+	if parent != nil {
+		root, err = q.lockExecutionJob(ctx, parent.RootJobID)
+		if err != nil {
+			return 0, err
+		}
+	}
+	return q.admitPreparedGenerationSource(ctx, source, parent, root, candidates, now, draw)
+}
+
+// The caller owns all source/account/settings locks and, for continuations, the
+// root lock. Never rediscover candidates or acquire earlier-order locks here.
+func (q *Queries) admitPreparedGenerationSource(ctx context.Context, source generationSource, parent *app.GenerationJob, root app.GenerationJob, candidates []generationCandidate, now *time.Time, draw func(int64) int64) (int, error) {
 	// Compute conservative shared action/human limits BEFORE random selection.
 	// Zero caps disable that candidate; they never loosen another candidate's cap.
 	eligible := candidates[:0]
@@ -52,17 +65,8 @@ func (q *Queries) admitGenerationSource(ctx context.Context, source generationSo
 	}
 	ctx, cancel := q.queryContext(ctx)
 	defer cancel()
-	var root app.GenerationJob
 	chainJobs := 0
 	if parent != nil {
-		var id app.ID
-		if err := q.queryer.QueryRowContext(ctx, `SELECT id FROM generation_jobs WHERE id=$1 FOR UPDATE`, parent.RootJobID).Scan(&id); err != nil {
-			return 0, databaseError(ctx, err)
-		}
-		root, err = q.GenerationJobByID(ctx, id)
-		if err != nil {
-			return 0, err
-		}
 		if err := q.queryer.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT 1 FROM generation_jobs WHERE root_job_id=$1 LIMIT $2) chain`, root.ID, root.MaxChainJobs).Scan(&chainJobs); err != nil {
 			return 0, databaseError(ctx, err)
 		}
@@ -179,13 +183,13 @@ func (q *Queries) generationReplyAllowance(ctx context.Context, s app.AgentSetti
 	location, _ := time.LoadLocation(p.Timezone)
 	start, end := app.GenerationLocalDayBounds(now, location)
 	var daily, conversation int
-	if err := q.queryer.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT 1 FROM generation_jobs WHERE agent_id=$1 AND output_kind='reply' AND created_at >= $2 AND created_at < $3 LIMIT $4) reserved`, s.AgentID, start, end, p.ReplyCapPerDay).Scan(&daily); err != nil {
+	if err := q.queryer.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT 1 FROM generation_jobs WHERE agent_id=$1 AND output_kind IN ('reply','quote') AND created_at >= $2 AND created_at < $3 LIMIT $4) reserved`, s.AgentID, start, end, p.ReplyCapPerDay).Scan(&daily); err != nil {
 		return false, databaseError(ctx, err)
 	}
 	if daily >= p.ReplyCapPerDay {
 		return false, nil
 	}
-	if err := q.queryer.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT 1 FROM generation_jobs WHERE agent_id=$1 AND output_kind='reply' AND source_post_id=$2 LIMIT $3) reserved`, s.AgentID, post, p.ReplyCapPerConversation).Scan(&conversation); err != nil {
+	if err := q.queryer.QueryRowContext(ctx, `SELECT count(*) FROM (SELECT 1 FROM generation_jobs WHERE agent_id=$1 AND output_kind IN ('reply','quote') AND source_post_id=$2 LIMIT $3) reserved`, s.AgentID, post, p.ReplyCapPerConversation).Scan(&conversation); err != nil {
 		return false, databaseError(ctx, err)
 	}
 	return conversation < p.ReplyCapPerConversation, nil

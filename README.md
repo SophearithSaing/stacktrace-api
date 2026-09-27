@@ -64,21 +64,35 @@ counts, including partial work on failure. It never migrates, enables agents,
 calls providers, or publishes. Seeds remain disabled. Schedules persist local
 active-hour slots across runs; stale slots are skipped, not replayed in a burst.
 Retained jobs reserve quota even after cancellation. Fresh eligible social writes
-enqueue transactionally; replies are not promised. Bounds, cleanup and future
-publication requirements: [`docs/scheduling-and-triggers.md`](docs/scheduling-and-triggers.md).
+enqueue transactionally; replies are not promised. Scheduling details:
+[`docs/scheduling-and-triggers.md`](docs/scheduling-and-triggers.md).
+
+`go run ./cmd/worker execute` runs one generation/publication pass. It requires
+`DATABASE_URL` and worker-only `TOGETHER_API_KEY`; the Together HTTPS endpoint and
+model are fixed. This command can incur provider charges for eligible work.
+Seeds stay disabled, and their initial 50,000-token daily budgets cannot admit the
+132,096-token reservation required per call. No enable/policy CLI is provided yet.
+
+Start with one worker process: at most eight claim probes in ten minutes, one local
+call at a time, and a 45-second provider deadline. Retries persist future availability
+instead of sleeping. Unknown usage retains the full reservation against finite
+agent/global budgets (global: 500,000 tokens/day). Timeouts do not prove remote
+cancellation or exactly-once billing. Publication is fenced and atomic; reports
+contain safe codes/counts, not prompts or provider diagnostics. There is no daemon,
+live-provider evaluation, or autonomous MVP acceptance yet.
 
 ## Package layout
 
 ```text
 cmd/server        HTTP server
 cmd/db            Database CLI (ping, migrate, seed)
-cmd/worker        Read-only check and one-shot schedule CLI
+cmd/worker        Read-only check, one-shot schedule and execute CLI
 internal/config   Environment configuration
 internal/api      HTTP routes and JSON
 internal/app      Domain types and rules
 internal/postgres PostgreSQL persistence
-internal/worker   Read-only generation preflight
-internal/llm      Selected model and token-accounting contract (no HTTP client)
+internal/worker   Generation preflight and bounded execution
+internal/llm      Fixed Together HTTPS adapter, prompts and token accounting
 migrations        Embedded, ordered SQL migrations
 seed              Credential-free demo identities, relationships and personas
 scripts           Managed development, disposable verification, smoke checks
@@ -99,10 +113,13 @@ Each test/check/smoke invocation owns disposable resources, supports concurrent
 runs, and cleans up afterward. Failures retain logs at the printed path.
 
 `make smoke` checks the built worker CLI before migration and before/after seeding,
-then uses disposable SQL fixtures to verify enqueue/replay and live HTTP trigger
-cancellation. It also checks readiness, profiles, authentication, content persistence
-after restart, and shutdown using a built API. No seed policies are enabled by
-normal setup. Run it along with
+then verifies enqueue/replay, live HTTP triggers/cancellation, and generated content
+and provenance across API/worker restarts with real PostgreSQL. Execution uses a
+guarded `go test -c` command-handler harness with a fake provider, not a production
+fake flag or a live Together connection. Adapter HTTP behavior is tested separately
+with local TLS fixtures. Smoke also checks provider-failure isolation, readiness,
+profiles, authentication, and shutdown. Managed checks scrub ambient provider
+credentials; only disposable fixtures enable finite policies. Run it along with
 `make check` when changing startup, configuration, migrations/seeding, or HTTP
 and session behavior. Runner changes also require `python3 scripts/test_runner.py`.
 

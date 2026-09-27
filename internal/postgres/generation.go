@@ -117,12 +117,24 @@ func (q *Queries) InitializeAgentSettings(ctx context.Context, settings app.Agen
 }
 
 func (q *Queries) AgentSettingsByID(ctx context.Context, agentID app.ID) (app.AgentSettings, error) {
+	settings, err := q.readAgentSettings(ctx, agentID)
+	var invalid *app.ValidationError
+	if errors.As(err, &invalid) {
+		return app.AgentSettings{}, app.ErrUnavailable
+	}
+	return settings, err
+}
+
+// Keep malformed configuration distinct from database failure for trusted
+// controls. Public/internal readers retain the existing unavailable contract.
+func (q *Queries) readAgentSettings(ctx context.Context, agentID app.ID) (app.AgentSettings, error) {
 	ctx, cancel := q.queryContext(ctx)
 	defer cancel()
 	var settings app.AgentSettings
 	var policy []byte
 	var accountType app.AccountType
-	err := q.queryer.QueryRowContext(ctx, `SELECT s.agent_id,s.persona_version,s.enabled,s.policy,s.next_post_at,
+	err := q.queryer.QueryRowContext(ctx, `SELECT s.agent_id,s.persona_version,s.enabled,
+		CASE WHEN octet_length(s.policy::text)<=8192 THEN s.policy END,s.next_post_at,
 		COALESCE(to_char(s.schedule_date,'YYYY-MM-DD'),''),s.remaining_slots,s.last_published_at,s.updated_at,s.pause_revision,a.type
 		FROM agent_settings s JOIN accounts a ON a.id=s.agent_id WHERE s.agent_id=$1`, agentID).Scan(
 		&settings.AgentID, &settings.PersonaVersion, &settings.Enabled, &policy, &settings.NextPostAt,
@@ -132,7 +144,7 @@ func (q *Queries) AgentSettingsByID(ctx context.Context, agentID app.ID) (app.Ag
 	}
 	settings.Policy, err = app.DecodeGenerationPolicy(policy)
 	if err != nil || settings.Validate() != nil || accountType != app.AccountAgent {
-		return app.AgentSettings{}, app.ErrUnavailable
+		return app.AgentSettings{}, invalidGeneration("settings")
 	}
 	return settings, nil
 }

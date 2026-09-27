@@ -46,7 +46,8 @@ cleanup() {
     elif [[ $result != 0 ]]; then
         echo "Command failed (status $result). Diagnostics: $state" >&2
         if [[ $disposable == 1 && $cleanup_failed == 0 ]]; then
-            rm -f "$state/password" "$state/csrf-key" "$state/cursor-key" "$state/server" "$state/server.next" "$state/db" "$state/worker"
+            rm -f "$state/password" "$state/csrf-key" "$state/cursor-key" "$state/server" "$state/server.next" "$state/db" "$state/worker" \
+                "$state/worker.test" "$state/execution-command.json" "$state/execution-fixture.json" "$state/generation-fixture.json"
         fi
     fi
     exit "$result"
@@ -85,6 +86,8 @@ fi
 
 for tool in setsid python3 curl openssl go; do need "$tool"; done
 init_settings
+# Managed verification never inherits live provider credentials or a harness entry.
+unset TOGETHER_API_KEY STACKTRACE_GENERATION_SMOKE
 stop_process job
 echo "Runtime artifacts: $state"
 if [[ $command == dev-up || $command == smoke ]]; then
@@ -92,7 +95,10 @@ if [[ $command == dev-up || $command == smoke ]]; then
     run go build -o "$state/server.next" ./cmd/server
     run go build -o "$state/db" ./cmd/db
 fi
-if [[ $command == smoke ]]; then run go build -o "$state/worker" ./cmd/worker; fi
+if [[ $command == smoke ]]; then
+    run go build -o "$state/worker" ./cmd/worker
+    run go test -c -o "$state/worker.test" ./cmd/worker
+fi
 start_database
 
 case "$command" in
@@ -125,6 +131,10 @@ case "$command" in
             start_api 1 0
             run python3 scripts/smoke.py "$API_PUBLIC_ORIGIN" verify "$state/smoke-fixture.json"
             run python3 -B scripts/smoke_generation.py "$state" verify "${smoke_sql[@]}"
+            run python3 -B scripts/smoke_generation.py "$state" execute "${smoke_sql[@]}"
+            stop_process api
+            start_api 1 0
+            run python3 -B scripts/smoke_generation.py "$state" execute-verify "${smoke_sql[@]}"
         else
             start_api 0 "${DEV_PORT:-8080}"
             echo "Logs: $state/api.log, $state/postgres.log, $state/commands.log"

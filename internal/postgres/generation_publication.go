@@ -138,6 +138,9 @@ func (q *Queries) publishGeneration(ctx context.Context, id app.ID, version int6
 	if attempt.Decision != app.GenerationPublish {
 		return app.GenerationJob{}, app.ErrGenerationOutput
 	}
+	if attempt.PauseRevision == nil || *attempt.PauseRevision != settings.PauseRevision {
+		return app.GenerationJob{}, app.ErrForbidden
+	}
 	recent, err := q.publicationRecentContent(ctx, job.AgentID)
 	if err != nil {
 		return app.GenerationJob{}, err

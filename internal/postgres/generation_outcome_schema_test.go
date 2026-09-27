@@ -38,7 +38,7 @@ func TestMigrateGenerationOutcomeFromExecution(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := store.db.QueryRow(`SELECT jsonb_agg(to_jsonb(t)-'decision'-'skip_reason'-'not_before' ORDER BY id)::text FROM generation_attempts t`).Scan(&after); err != nil || before != after {
+	if err := store.db.QueryRow(`SELECT jsonb_agg(to_jsonb(t)-'decision'-'skip_reason'-'not_before'-'pause_revision' ORDER BY id)::text FROM generation_attempts t`).Scan(&after); err != nil || before != after {
 		t.Fatal("legacy history changed", err)
 	}
 	for _, id := range ids {

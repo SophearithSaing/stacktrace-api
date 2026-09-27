@@ -123,6 +123,7 @@ func (s *Store) SettleGeneration(ctx context.Context, reserved app.GenerationAtt
 
 func sameGenerationReservation(a, b app.GenerationAttempt) bool {
 	return a.ID == b.ID && a.JobID == b.JobID && a.AttemptNumber == b.AttemptNumber && a.LeaseVersion == b.LeaseVersion &&
+		sameSettlementUsage(a.PauseRevision, b.PauseRevision) &&
 		a.Provider == b.Provider && a.Model == b.Model && a.ContextHash == b.ContextHash && a.ContextBuilderVersion == b.ContextBuilderVersion &&
 		a.BudgetDay == b.BudgetDay && a.ReservedTokens == b.ReservedTokens && a.StartedAt.Equal(b.StartedAt)
 }

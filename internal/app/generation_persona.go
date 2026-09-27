@@ -63,6 +63,7 @@ type AgentSettings struct {
 	AgentID         ID
 	PersonaVersion  int
 	Enabled         bool
+	PauseRevision   int64
 	Policy          GenerationPolicy
 	NextPostAt      *time.Time
 	ScheduleDate    string
@@ -72,7 +73,7 @@ type AgentSettings struct {
 }
 
 func (s AgentSettings) Validate() error {
-	if !validGenerationID(s.AgentID) || s.PersonaVersion < 1 || s.PersonaVersion > 2147483647 || s.UpdatedAt.IsZero() {
+	if !validGenerationID(s.AgentID) || s.PersonaVersion < 1 || s.PersonaVersion > 2147483647 || s.UpdatedAt.IsZero() || s.PauseRevision < 0 {
 		return fmt.Errorf("invalid agent settings identity or update time")
 	}
 	if err := s.Policy.Validate(); err != nil {

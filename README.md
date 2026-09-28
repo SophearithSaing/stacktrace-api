@@ -55,7 +55,7 @@ without partial writes. Startup never migrates or seeds.
 `worker check` is a bounded, read-only schema/configuration preflight, including
 disabled settings. It needs no provider credentials and prints only configured
 and enabled-setting counts. It does **not** run generation, claim jobs, schedule,
-publish, or certify provider/runtime readiness. No worker daemon exists yet.
+publish, or certify provider/runtime readiness.
 
 `worker schedule` performs one schema-checked enqueue/expiry pass (at most 32
 agents and 32 stale jobs, within 30 seconds; 35 seconds including connection).
@@ -71,15 +71,18 @@ enqueue transactionally; replies are not promised. Scheduling details:
 `DATABASE_URL` and worker-only `TOGETHER_API_KEY`; the Together HTTPS endpoint and
 model are fixed. This command can incur provider charges for eligible work.
 Seeds stay disabled, and their initial 50,000-token daily budgets cannot admit the
-132,096-token reservation required per call. No enable/policy CLI is provided yet.
+132,096-token reservation required per call.
 
-Start with one worker process: at most eight claim probes in ten minutes, one local
-call at a time, and a 45-second provider deadline. Retries persist future availability
-instead of sleeping. Unknown usage retains the full reservation against finite
-agent/global budgets (global: 500,000 tokens/day). Timeouts do not prove remote
-cancellation or exactly-once billing. Publication is fenced and atomic; reports
-contain safe codes/counts, not prompts or provider diagnostics. There is no daemon,
-live-provider evaluation, or autonomous MVP acceptance yet.
+`go run ./cmd/worker serve` runs a continuous bounded worker with its own
+infrastructure listener (`WORKER_HTTP_ADDR`, default `127.0.0.1:8081`). It runs
+`schedule` then `execute` passes in a loop with a 5-second wait between cycles,
+30-second backoff after transient failures, and never overlapping local provider
+calls. `GET /healthz` is liveness-only; `GET /readyz` reports whether the service
+has completed a healthy cycle recently and can reach the database/schema. Fatal
+provider credentials/configuration/accounting errors stop the service; operator
+restart is required after repair. Transient storage errors make the service unready
+until the next healthy pass. No live-provider evaluation or autonomous MVP gate
+is claimed yet.
 
 ## Package layout
 
@@ -87,7 +90,7 @@ live-provider evaluation, or autonomous MVP acceptance yet.
 cmd/server        HTTP server
 cmd/admin         Trusted operator CLI (personas, policy, agents, jobs, usage, status)
 cmd/db            Database CLI (ping, migrate, seed)
-cmd/worker        Read-only check, one-shot schedule and execute CLI
+cmd/worker        Read-only check, one-shot schedule/execute and continuous serve CLI
 internal/config   Environment configuration
 internal/api      HTTP routes and JSON
 internal/app      Domain types and rules

@@ -336,11 +336,10 @@ func executeAdminCommand(ctx context.Context, command adminCommand, store *postg
 		if err != nil {
 			return err
 		}
-		persona, err := app.DecodeAdminPersona(payload)
+		persona, err := app.DecodeAdminPersona(payload, command.agent)
 		if err != nil {
 			return err
 		}
-		persona.AgentID = command.agent
 		if err := store.CreateAndSelectPersona(ctx, persona); err != nil {
 			return err
 		}

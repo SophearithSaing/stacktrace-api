@@ -49,26 +49,26 @@ func TestParseAdminCommandStrictness(t *testing.T) {
 		t.Fatal("usage day parse failed", err)
 	}
 	bad := map[string][]string{
-		"unknown command":                  {"unknown", "x"},
-		"agent+all conflict":               {"agent", "pause", "--all", "00000000-0000-4000-8000-000000000001"},
-		"agent pause no target":            {"agent", "pause"},
-		"agent resume no target":           {"agent", "resume"},
-		"unknown flag":                     {"job", "list", "--weird", "x"},
-		"limit out of range":               {"job", "list", "--limit", "99"},
-		"limit prefix junk":                {"job", "list", "--limit", "3junk"},
-		"version prefix junk":              {"persona", "select", "00000000-0000-4000-8000-000000000001", "3junk"},
-		"missing value":                    {"job", "list", "--limit"},
-		"invalid status":                   {"job", "list", "--status", "weird"},
-		"invalid uuid":                     {"job", "retry", "nope"},
-		"bad persona file":                 {"persona", "select", "n", "0"},
-		"missing file args":                {"persona", "create"},
-		"missing targets":                  {"job", "retry"},
-		"zero day range":                   {"usage", "--day", "wrong"},
-		"persona flag override":            {"persona", "create", "00000000-0000-4000-8000-000000000001", "/tmp/x", "--agent", "00000000-0000-4000-8000-000000000002"},
-		"status irrelevant flag":           {"status", "--agent", "00000000-0000-4000-8000-000000000001"},
-		"job retry irrelevant flag":        {"job", "retry", "00000000-0000-4000-8000-000000000001", "--limit", "3"},
-		"duplicate agent flag":             {"usage", "--agent", "00000000-0000-4000-8000-000000000001", "--agent", "00000000-0000-4000-8000-000000000001"},
-		"duplicate limit":                  {"job", "list", "--limit", "3", "--limit", "4"},
+		"unknown command":           {"unknown", "x"},
+		"agent+all conflict":        {"agent", "pause", "--all", "00000000-0000-4000-8000-000000000001"},
+		"agent pause no target":     {"agent", "pause"},
+		"agent resume no target":    {"agent", "resume"},
+		"unknown flag":              {"job", "list", "--weird", "x"},
+		"limit out of range":        {"job", "list", "--limit", "99"},
+		"limit prefix junk":         {"job", "list", "--limit", "3junk"},
+		"version prefix junk":       {"persona", "select", "00000000-0000-4000-8000-000000000001", "3junk"},
+		"missing value":             {"job", "list", "--limit"},
+		"invalid status":            {"job", "list", "--status", "weird"},
+		"invalid uuid":              {"job", "retry", "nope"},
+		"bad persona file":          {"persona", "select", "n", "0"},
+		"missing file args":         {"persona", "create"},
+		"missing targets":           {"job", "retry"},
+		"zero day range":            {"usage", "--day", "wrong"},
+		"persona flag override":     {"persona", "create", "00000000-0000-4000-8000-000000000001", "/tmp/x", "--agent", "00000000-0000-4000-8000-000000000002"},
+		"status irrelevant flag":    {"status", "--agent", "00000000-0000-4000-8000-000000000001"},
+		"job retry irrelevant flag": {"job", "retry", "00000000-0000-4000-8000-000000000001", "--limit", "3"},
+		"duplicate agent flag":      {"usage", "--agent", "00000000-0000-4000-8000-000000000001", "--agent", "00000000-0000-4000-8000-000000000001"},
+		"duplicate limit":           {"job", "list", "--limit", "3", "--limit", "4"},
 	}
 	for name, args := range bad {
 		t.Run(name, func(t *testing.T) {
@@ -172,10 +172,18 @@ func TestAdminCLIIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
+	db, err := sql.Open("pgx", databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var now time.Time
+	if err := db.QueryRowContext(ctx, `SELECT now()`).Scan(&now); err != nil {
+		t.Fatal(err)
+	}
+	now = now.UTC()
 
 	agentID := app.NewID()
-	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
-
 	if err := store.CreateAccount(ctx, app.Account{ID: agentID, Type: app.AccountAgent, Handle: "admin_agent", DisplayName: "Admin Agent", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
@@ -234,11 +242,6 @@ func TestAdminCLIIntegration(t *testing.T) {
 	jobID := app.NewID()
 	jobAt := now.Add(2 * time.Hour)
 	day := jobAt.Format(time.DateOnly)
-	db, err := sql.Open("pgx", databaseURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
 	actorID := app.NewID()
 	if err := store.CreateAccount(ctx, app.Account{ID: actorID, Type: app.AccountHuman, Handle: "admin_human_actor", DisplayName: "Actor", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)

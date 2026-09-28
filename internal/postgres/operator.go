@@ -7,12 +7,14 @@ import (
 )
 
 // DisableAccount performs the trusted, irreversible soft disable. It is
-// idempotent: already disabled accounts are left untouched but still lose every
-// remaining session. The agent-settings row and all authored content stay until
-// separately removed; generation admission, publication and human session
-// resolution already observe disabled_at, so the write is a single fenced flip.
-// Lock order matches the existing account-first convention (pause/pause journey,
-// content mutation): account FOR SHARE/UPDATE precedes sessions.
+// idempotent: already disabled accounts are left fully intact but still lose
+// every remaining session; only the first disable stamps disabled_at and
+// updated_at, preserving the original timestamps on repeats. The agent-
+// settings row and all authored content stay until separately removed;
+// generation admission, publication and human session resolution already
+// observe disabled_at, so the write is a single fenced flip. Lock order
+// matches the existing account-first convention (pause, content mutation):
+// account FOR SHARE/UPDATE precedes sessions.
 func (s *Store) DisableAccount(ctx context.Context, id app.ID) error {
 	if _, err := app.ParseID(string(id)); err != nil {
 		return invalidGeneration("account_id")
@@ -25,7 +27,8 @@ func (s *Store) DisableAccount(ctx context.Context, id app.ID) error {
 			return databaseError(ctx, err)
 		}
 		if !disabled {
-			result, err := q.queryer.ExecContext(ctx, `UPDATE accounts SET disabled_at=clock_timestamp() WHERE id=$1 AND disabled_at IS NULL`, id)
+			result, err := q.queryer.ExecContext(ctx, `UPDATE accounts SET disabled_at=clock_timestamp(),
+				updated_at=clock_timestamp() WHERE id=$1 AND disabled_at IS NULL`, id)
 			if err := generationClaimMutation(ctx, result, err); err != nil {
 				return err
 			}

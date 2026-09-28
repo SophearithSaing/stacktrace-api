@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/SophearithSaing/stacktrace-api/internal/app"
 )
@@ -29,9 +30,20 @@ func TestDisableAccountRevokesSessions(t *testing.T) {
 	if err := store.DeletePost(ctx, token, app.NewID()); !errors.Is(err, app.ErrUnauthenticated) {
 		t.Fatalf("disabled session write: %v", err)
 	}
-	// Idempotent: repeated disable stays a no-op with nothing to revoke.
+	// Idempotent: repeated disable stays a no-op and preserves all timestamps.
+	var created, updated time.Time
+	if err := store.db.QueryRow(`SELECT created_at,updated_at FROM accounts WHERE id=$1`, actor).Scan(&created, &updated); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.DisableAccount(ctx, actor); err != nil {
 		t.Fatal(err)
+	}
+	var created2, updated2 time.Time
+	if err := store.db.QueryRow(`SELECT created_at,updated_at FROM accounts WHERE id=$1`, actor).Scan(&created2, &updated2); err != nil {
+		t.Fatal(err)
+	}
+	if !created.Equal(created2) || !updated.Equal(updated2) {
+		t.Fatalf("repeated disable changed timestamps: %v -> %v", updated, updated2)
 	}
 }
 

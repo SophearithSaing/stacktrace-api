@@ -163,7 +163,7 @@ func serve(ctx context.Context, store *postgres.Store, provider app.GenerationPr
 	cycleCtx, stopCycles := context.WithCancel(ctx)
 	cycleErr := make(chan error, 1)
 	go func() {
-		cycleErr <- serveCycles(cycleCtx, store, provider, logger, outputWriter, state)
+		cycleErr <- serveCycles(cycleCtx, store, provider, logger, state)
 	}()
 
 	var cycleResult error
@@ -213,13 +213,13 @@ func serve(ctx context.Context, store *postgres.Store, provider app.GenerationPr
 	return nil
 }
 
-func serveCycles(ctx context.Context, store *postgres.Store, provider app.GenerationProvider, logger *slog.Logger, outputWriter io.Writer, state *serveState) error {
+func serveCycles(ctx context.Context, store *postgres.Store, provider app.GenerationProvider, logger *slog.Logger, state *serveState) error {
 	for {
 		if err := ctx.Err(); err != nil {
 			return worker.ExecutionStopped
 		}
 
-		cycleErr := runServeCycle(ctx, store, provider, logger, outputWriter, state)
+		cycleErr := runServeCycle(ctx, store, provider, logger, state)
 		if cycleErr == nil {
 			select {
 			case <-time.After(serveCycleInterval):
@@ -252,7 +252,7 @@ func serveCycles(ctx context.Context, store *postgres.Store, provider app.Genera
 	}
 }
 
-func runServeCycle(ctx context.Context, store *postgres.Store, provider app.GenerationProvider, logger *slog.Logger, outputWriter io.Writer, state *serveState) error {
+func runServeCycle(ctx context.Context, store *postgres.Store, provider app.GenerationProvider, logger *slog.Logger, state *serveState) error {
 	start := time.Now()
 	scheduleCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
 	result, err := schedule(scheduleCtx, store)
@@ -260,12 +260,30 @@ func runServeCycle(ctx context.Context, store *postgres.Store, provider app.Gene
 	if err != nil {
 		return err
 	}
-	reportSchedule(outputWriter, result, nil)
+	logger.Info("serve schedule complete",
+		slog.Int("agents_visited", result.AgentsVisited),
+		slog.Int("invalid_agents", result.InvalidAgents),
+		slog.Int("jobs_enqueued", result.JobsEnqueued),
+		slog.Int("slots_denied", result.SlotsDenied),
+		slog.Int("jobs_expired", result.JobsExpired))
 
 	execCtx, cancel := context.WithTimeout(ctx, worker.ExecutionTimeout)
 	summary, execErr := worker.Execute(execCtx, store, provider)
 	cancel()
-	reportExecution(outputWriter, summary, execErr)
+	logger.Info("serve execution result",
+		slog.Int("probes", summary.Probes),
+		slog.Int("claimed", summary.Claimed),
+		slog.Int("calls", summary.Calls),
+		slog.Int("calls_succeeded", summary.CallsSucceeded),
+		slog.Int("recovered", summary.Recovered),
+		slog.Int("expired", summary.Expired),
+		slog.Int("published", summary.Published),
+		slog.Int("skipped", summary.Skipped),
+		slog.Int("cancelled", summary.Cancelled),
+		slog.Int("failed", summary.Failed),
+		slog.Int("retried", summary.Retried),
+		slog.Int("denied", summary.Denied),
+		slog.String("error_code", safeErrorCode(execErr)))
 
 	if execErr != nil {
 		var safe worker.ExecutionError
@@ -290,10 +308,6 @@ func runServeCycle(ctx context.Context, store *postgres.Store, provider app.Gene
 		logGenerationStatus(ctx, store, logger)
 	}
 	logger.Info("serve cycle complete",
-		slog.Int("probes", summary.Probes),
-		slog.Int("claimed", summary.Claimed),
-		slog.Int("calls", summary.Calls),
-		slog.Int("calls_succeeded", summary.CallsSucceeded),
 		slog.Duration("duration", time.Since(start)))
 	return nil
 }

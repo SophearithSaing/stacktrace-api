@@ -349,11 +349,14 @@ func TestGenerationSettlementRevisionSnapshotDuringBudgetWait(t *testing.T) {
 	}()
 	waitForDatabaseBlock(t, store, pid)
 	// The caller owns the reservation while settlement waits; mutating the
-	// revision after the entry snapshot must never change the comparison or
-	// transition. -race validates that this alias is not read again.
-	revision := int64(9)
-	attempt.PauseRevision = &revision
-	*attempt.PauseRevision = 8
+	// ORIGINAL shared pointee after the entry snapshot must never change the
+	// comparison or transition. A snapshot that copies only the pointer fails
+	// here too; -race validates the memory is not read again.
+	revision := attempt.PauseRevision
+	if revision == nil {
+		t.Fatal("missing pause revision")
+	}
+	*revision = 9
 	if _, err := tx.Exec(`SELECT id FROM generation_attempts WHERE id=$1 FOR UPDATE NOWAIT`, attempt.ID); err != nil {
 		t.Fatal(err)
 	}

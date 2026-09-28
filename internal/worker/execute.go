@@ -273,7 +273,9 @@ func (r *execution) call(ctx context.Context, request app.GenerationRequest) (ap
 	}
 	stopRenew()
 	leaseErr := <-done
-	if outcome.Failure == "" && leaseErr == nil {
+	// Only a valid, non-cancelled provider outcome is healthy evidence. A late
+	// success returned after cancellation is deliberately not counted.
+	if leaseErr == nil && callCtx.Err() == nil && outcome.Failure == "" {
 		r.summary.CallsSucceeded++
 	}
 	return outcome, leaseErr

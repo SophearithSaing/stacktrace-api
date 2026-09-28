@@ -18,23 +18,60 @@ func TestDecodeAdminPersonaStrictness(t *testing.T) {
 	broken := map[string]string{
 		"unknown":       `{"version":1,"instructions":"x","topic_tags":["a"],"created_at":"2026-09-28T12:00:00Z","extra":1}`,
 		"duplicate":     `{"version":1,"instructions":"x","instructions":"y","topic_tags":["a"],"created_at":"2026-09-28T12:00:00Z"}`,
+		"case alias":    `{"Version":1,"version":2,"instructions":"x","topic_tags":["a"],"created_at":"2026-09-28T12:00:00Z"}`,
 		"missing":       `{"version":1,"instructions":"x"}`,
 		"trailing":      `{"version":1,"instructions":"x","topic_tags":["a"],"created_at":"2026-09-28T12:00:00Z"} {}`,
 		"invalid tags":  `{"version":1,"instructions":"x","topic_tags":["A"],"created_at":"2026-09-28T12:00:00Z"}`,
 		"empty content": `{"version":1,"instructions":"","topic_tags":[],"created_at":"2026-09-28T12:00:00Z"}`,
 		"missing time":  `{"version":1,"instructions":"x","topic_tags":["a"]}`,
+		"bad time":      `{"version":1,"instructions":"x","topic_tags":["a"],"created_at":"not-a-time"}`,
+		"null":          `{"version":1,"instructions":"x","topic_tags":["a"],"created_at":null}`,
+		"zero version":  `{"version":0,"instructions":"x","topic_tags":["a"],"created_at":"2026-09-28T12:00:00Z"}`,
+		"float version": `{"version":1.5,"instructions":"x","topic_tags":["a"],"created_at":"2026-09-28T12:00:00Z"}`,
 	}
 	for name, payload := range broken {
-		if _, decodeErr := DecodeAdminPersona([]byte(payload)); decodeErr == nil {
-			t.Fatalf("%s accepted", name)
-		}
+		t.Run(name, func(t *testing.T) {
+			if _, decodeErr := DecodeAdminPersona([]byte(payload)); decodeErr == nil {
+				t.Fatalf("accepted")
+			}
+		})
 	}
-	if _, err := DecodeAdminPersona([]byte(`{"version":1,"instructions":"` + strings.Repeat("x", 65000) + `","topic_tags":["a"]}`)); err == nil {
+	if _, err := DecodeAdminPersona([]byte(`{"version":1,"instructions":"` + strings.Repeat("x", 65000) + `","topic_tags":["a"],"created_at":"2026-09-28T12:00:00Z"}`)); err == nil {
 		t.Fatal("oversized persona accepted")
 	}
 	if _, err := DecodeAdminPersona([]byte(`not json`)); err == nil {
 		t.Fatal("non-JSON accepted")
 	}
+}
+
+func TestDecodeAdminPersonaErrorsDoNotEchoInput(t *testing.T) {
+	secret := "secret-password-do-not-echo"
+	control := "\x00\x01\x02"
+	cases := map[string]string{
+		"unknown secret field": `{"version":1,"instructions":"x","topic_tags":["a"],"created_at":"2026-09-28T12:00:00Z","leak":"` + secret + `"}`,
+		"nul in instructions":  `{"version":1,"instructions":"x` + control + `x","topic_tags":["a"],"created_at":"2026-09-28T12:00:00Z"}`,
+		"bad time with secret": `{"version":1,"instructions":"x","topic_tags":["a"],"created_at":"` + secret + `"}`,
+	}
+	for name, payload := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := decodeErrString(t, func() error {
+				_, err := DecodeAdminPersona([]byte(payload))
+				return err
+			})
+			if err == nil {
+				t.Fatal("accepted")
+			}
+			msg := err.Error()
+			if strings.Contains(msg, secret) || strings.Contains(msg, control) {
+				t.Fatalf("error echoes input: %q", msg)
+			}
+		})
+	}
+}
+
+func decodeErrString(t *testing.T, fn func() error) error {
+	t.Helper()
+	return fn()
 }
 
 func TestDecodeAdminPolicyBounds(t *testing.T) {
@@ -56,5 +93,16 @@ func TestDecodeAdminPolicyBounds(t *testing.T) {
 	}
 	if _, err := DecodeAdminPolicy([]byte(`{"version":1}`)); err == nil {
 		t.Fatal("invalid policy accepted")
+	}
+	// Validation errors must not echo the offending value.
+	if _, err := DecodeAdminPolicy([]byte(`{"version":1,"timezone":"EvilZone","active_start":"09:00","active_end":"17:00",
+		"scheduled_min_per_day":1,"scheduled_max_per_day":2,"min_spacing_seconds":3600,"response_min_delay_seconds":60,
+		"response_max_delay_seconds":300,"source_max_age_seconds":3600,"reply_probability_bps":2500,"repost_probability_bps":1000,
+		"quote_probability_bps":2000,"human_post_probability_bps":500,"continuation_probability_bps":500,"cooldown_seconds":1800,
+		"scheduled_post_cap_per_day":2,"reply_cap_per_day":10,"reply_cap_per_conversation":2,"max_agents_per_trigger":2,
+		"human_trigger_cap_per_window":5,"human_trigger_window_seconds":3600,"max_chain_depth":2,"max_chain_jobs":5,"daily_token_budget":50000}`)); err == nil {
+		t.Fatal("invalid timezone accepted")
+	} else if strings.Contains(err.Error(), "EvilZone") {
+		t.Fatalf("policy error echoes input: %q", err.Error())
 	}
 }

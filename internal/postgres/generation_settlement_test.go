@@ -322,3 +322,49 @@ func TestGenerationSettlementBudgetLockAndUsageSnapshot(t *testing.T) {
 	}
 	admitSpend(t, store, other, otherInput) // Newly released cost is visible to admission.
 }
+
+func TestGenerationSettlementRevisionSnapshotDuringBudgetWait(t *testing.T) {
+	store, job, input := spendFixture(t, 500000)
+	attempt := admitSpend(t, store, job, input)
+	tx, err := store.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	var pid int
+	if err := tx.QueryRow(`SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock($1)`, generationBudgetLock); err != nil {
+		t.Fatal(err)
+	}
+	outcome := settlementOutcome(t, job)
+	done := make(chan error, 1)
+	go func() {
+		ok, err := store.SettleGeneration(context.Background(), attempt, outcome, "req")
+		if err == nil && !ok {
+			err = errors.New("settlement rejected")
+		}
+		done <- err
+	}()
+	waitForDatabaseBlock(t, store, pid)
+	// The caller owns the reservation while settlement waits; mutating the
+	// revision after the entry snapshot must never change the comparison or
+	// transition. -race validates that this alias is not read again.
+	revision := int64(9)
+	attempt.PauseRevision = &revision
+	*attempt.PauseRevision = 8
+	if _, err := tx.Exec(`SELECT id FROM generation_attempts WHERE id=$1 FOR UPDATE NOWAIT`, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	saved := storedSpend(t, store, attempt.ID)
+	if saved.Status != app.AttemptSucceeded || saved.PauseRevision == nil || *saved.PauseRevision != 0 {
+		t.Fatalf("entry revision snapshot leaked into settlement: %+v", saved)
+	}
+}

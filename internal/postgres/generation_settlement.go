@@ -22,6 +22,14 @@ func (s *Store) SettleGeneration(ctx context.Context, reserved app.GenerationAtt
 	// over-target accounting is durably classified as execution-stopping failure.
 	input, output := outcome.InputTokens, outcome.OutputTokens
 	outcome.InputTokens, outcome.OutputTokens = nil, nil
+	// Snapshot the caller-owned pause revision too: settlement may wait on the
+	// budget/attempt locks, and mutated/caller-moved revisions after that wait
+	// must never change the authority comparison.
+	frozen := reserved
+	if frozen.PauseRevision != nil {
+		revision := *frozen.PauseRevision
+		frozen.PauseRevision = &revision
+	}
 	if outcome.Validate() != nil {
 		return false, invalidGeneration("outcome")
 	}
@@ -67,7 +75,7 @@ func (s *Store) SettleGeneration(ctx context.Context, reserved app.GenerationAtt
 		if err != nil {
 			return err
 		}
-		if !sameGenerationReservation(before, reserved) {
+		if !sameGenerationReservation(before, frozen) {
 			return app.ErrConflict
 		}
 		// A nonlocking kind read only. NEVER lock a job after budget/attempt.
@@ -84,7 +92,7 @@ func (s *Store) SettleGeneration(ctx context.Context, reserved app.GenerationAtt
 		if err != nil {
 			return err
 		}
-		after := reserved
+		after := frozen
 		after.Status, after.FinishedAt, after.ProviderRequestID = app.AttemptFailed, &now, requestID
 		after.ErrorCode = string(outcome.Failure)
 		after.InputTokens, after.OutputTokens = outcome.InputTokens, outcome.OutputTokens

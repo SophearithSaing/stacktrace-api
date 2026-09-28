@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/SophearithSaing/stacktrace-api/internal/app"
+	"github.com/SophearithSaing/stacktrace-api/internal/worker"
 )
 
 func retryFixture(t *testing.T, failure app.GenerationFailure) (*Store, app.GenerationJob, app.GenerationAttempt) {
@@ -22,6 +23,16 @@ func retryFixture(t *testing.T, failure app.GenerationFailure) (*Store, app.Gene
 		t.Fatalf("complete: %v", err)
 	}
 	return store, claimJob(t, store, job.ID), attempt
+}
+
+// realProviderFixture implements the provider boundary with a fixed outcome;
+// a successful publication needs no schedule/lease knobs beyond the fixtures.
+type realProviderFixture struct {
+	result app.GenerationResult
+}
+
+func (p realProviderFixture) Generate(ctx context.Context, req app.GenerationRequest) app.GenerationOutcome {
+	return app.GenerationOutcome{Result: p.result, ProviderRequestID: "retry-worker.1"}
 }
 
 func validReason(job app.GenerationJob) bool {
@@ -74,6 +85,23 @@ func TestGenerationRetryDenials(t *testing.T) {
 			t.Fatalf("accounting retry: %+v %v", got, err)
 		}
 	})
+	t.Run("accounting_retained", func(t *testing.T) {
+		store, failed, _ := retryFixture(t, app.GenerationCredentials)
+		generationSQL(t, store, `INSERT INTO generation_attempts(id,job_id,attempt_number,lease_version,provider,model,
+			context_hash,context_builder_version,budget_day,reserved_tokens,status,started_at,finished_at,error_code)
+			SELECT $1,job_id,attempt_number+1,lease_version,provider,model,context_hash,context_builder_version,budget_day,reserved_tokens,'failed',started_at,finished_at,'unsupported_accounting'
+			FROM generation_attempts WHERE job_id=$2`, app.NewID(), failed.ID)
+		if got, err := store.RetryGeneration(context.Background(), failed.ID); !errors.Is(err, app.ErrForbidden) {
+			t.Fatalf("retained accounting retry: %+v %v", got, err)
+		}
+	})
+	t.Run("unrecognized_reason", func(t *testing.T) {
+		store, failed, _ := retryFixture(t, app.GenerationCredentials)
+		generationSQL(t, store, `UPDATE generation_jobs SET reason_code='arbitrary_final' WHERE id=$1`, failed.ID)
+		if got, err := store.RetryGeneration(context.Background(), failed.ID); !errors.Is(err, app.ErrForbidden) {
+			t.Fatalf("unrecognized retry: %+v %v", got, err)
+		}
+	})
 	t.Run("expired", func(t *testing.T) {
 		store, job, input := spendFixture(t, 500000)
 		now := time.Now().UTC()
@@ -86,6 +114,9 @@ func TestGenerationRetryDenials(t *testing.T) {
 		}
 		if _, err := store.CompleteGeneration(ctx, job.ID, job.LeaseVersion, attempt.ID, 0); err != nil {
 			t.Fatal(err)
+		}
+		if failed := claimJob(t, store, job.ID); failed.Status != app.JobFailed {
+			t.Fatalf("expired fixture: %+v", failed)
 		}
 		time.Sleep(time.Second)
 		if got, err := store.RetryGeneration(ctx, job.ID); !errors.Is(err, app.ErrForbidden) {
@@ -107,12 +138,8 @@ func TestGenerationRetryDenials(t *testing.T) {
 	t.Run("invalid_output_limit", func(t *testing.T) {
 		store, job, input := spendFixture(t, 500000)
 		ctx := context.Background()
-		for round := 0; round < 2; round++ {
-			admission, err := store.ReserveGeneration(ctx, job.ID, job.LeaseVersion, input)
-			if err != nil || admission.Attempt == nil {
-				t.Fatalf("reserve: %+v %v", admission, err)
-			}
-			attempt := *admission.Attempt
+		for round := 1; round <= 2; round++ {
+			attempt := admitSpend(t, store, job, input)
 			if ok, err := store.SettleGeneration(ctx, attempt, app.GenerationOutcome{Failure: app.GenerationInvalidOutput}, ""); err != nil || !ok {
 				t.Fatalf("settle: %v %v", ok, err)
 			}
@@ -120,18 +147,13 @@ func TestGenerationRetryDenials(t *testing.T) {
 				t.Fatalf("complete: %v", err)
 			}
 			if existing := claimJob(t, store, job.ID); existing.Status == app.JobRetryWait {
-				// The auto backoff delay is a real-clock availability; no override.
-				time.Sleep(2200 * time.Millisecond)
+				time.Sleep(2200 * time.Millisecond) // Real backoff, no override.
 				got, err := store.ClaimGeneration(ctx)
 				if err != nil || got == nil || got.ID != job.ID {
 					t.Fatalf("claim: %+v %v", got, err)
 				}
 				job = claimJob(t, store, job.ID)
-				read, cntErr := store.GenerationContext(ctx, job.ID, job.LeaseVersion)
-				if cntErr != nil {
-					t.Fatal(cntErr)
-				}
-				input = read
+				input, _ = readGenerationContext(t, store, job)
 			}
 		}
 		failed := claimJob(t, store, job.ID)
@@ -183,53 +205,262 @@ func TestGenerationRetryDenials(t *testing.T) {
 	})
 }
 
-// TestGenerationRetryReAdmission proves a re-queued failed job admits fresh
-// work with an incremented attempt number without refunding charged usage.
-func TestGenerationRetryReAdmission(t *testing.T) {
+// TestGenerationRetryTerminalDenials covers each final, non-retryable job
+// state with the real store: succeeded, skipped and cancelled.
+func TestGenerationRetryTerminalDenials(t *testing.T) {
+	t.Run("succeeded", func(t *testing.T) {
+		store, job, attempt, output := publicationFixture(t, app.OutputReply, "A succeeded retry denial")
+		ctx := context.Background()
+		published, err := store.PublishGeneration(ctx, job.ID, job.LeaseVersion, attempt.ID, output)
+		if err != nil || published.Status != app.JobSucceeded {
+			t.Fatalf("publish: %+v %v", published, err)
+		}
+		if got, retryErr := store.RetryGeneration(ctx, job.ID); !errors.Is(retryErr, app.ErrConflict) {
+			t.Fatalf("succeeded retry: %+v %v", got, retryErr)
+		}
+	})
+	t.Run("skipped", func(t *testing.T) {
+		store, job, input := spendFixture(t, 500000)
+		ctx := context.Background()
+		attempt := admitSpend(t, store, job, input)
+		skip, err := app.DecodeGenerationResult([]byte(`{"decision":"skip","reason":"not_relevant"}`), job)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := store.SettleGeneration(ctx, attempt, app.GenerationOutcome{Result: skip}, ""); err != nil || !ok {
+			t.Fatalf("settle: %v %v", ok, err)
+		}
+		if _, err := store.CompleteGeneration(ctx, job.ID, job.LeaseVersion, attempt.ID, 0); err != nil {
+			t.Fatal(err)
+		}
+		if skipped := claimJob(t, store, job.ID); skipped.Status != app.JobSkipped {
+			t.Fatalf("skip fixture: %+v", skipped)
+		}
+		if got, retryErr := store.RetryGeneration(ctx, job.ID); !errors.Is(retryErr, app.ErrConflict) {
+			t.Fatalf("skipped retry: %+v %v", got, retryErr)
+		}
+	})
+	t.Run("cancelled", func(t *testing.T) {
+		store, job, input := spendFixture(t, 500000)
+		ctx := context.Background()
+		attempt := admitSpend(t, store, job, input)
+		if ok, err := store.SettleGeneration(ctx, attempt, app.GenerationOutcome{Failure: app.GenerationCancelled}, ""); err != nil || !ok {
+			t.Fatalf("settle: %v %v", ok, err)
+		}
+		if _, err := store.CompleteGeneration(ctx, job.ID, job.LeaseVersion, attempt.ID, 0); err != nil {
+			t.Fatal(err)
+		}
+		if cancelled := claimJob(t, store, job.ID); cancelled.Status != app.JobCancelled {
+			t.Fatalf("cancel fixture: %+v", cancelled)
+		}
+		if got, retryErr := store.RetryGeneration(ctx, job.ID); !errors.Is(retryErr, app.ErrConflict) {
+			t.Fatalf("cancelled retry: %+v %v", got, retryErr)
+		}
+	})
+}
+
+// TestGenerationRetryTightenedPolicy: a policy or source that could never
+// admit new work denies the retry instead of queueing it.
+func TestGenerationRetryTightenedPolicy(t *testing.T) {
+	t.Run("zero_reply_quota", func(t *testing.T) {
+		store, failed, _ := retryFixture(t, app.GenerationCredentials)
+		generationSQL(t, store, `UPDATE agent_settings SET policy=jsonb_set(policy,'{reply_cap_per_day}','0') WHERE agent_id=$1`, failed.AgentID)
+		if got, err := store.RetryGeneration(context.Background(), failed.ID); !errors.Is(err, app.ErrForbidden) {
+			t.Fatalf("zero quota retry: %+v %v", got, err)
+		}
+	})
+	t.Run("stale_source_window", func(t *testing.T) {
+		store, failed, _ := retryFixture(t, app.GenerationCredentials)
+		generationSQL(t, store, `UPDATE agent_settings SET policy=jsonb_set(policy,'{source_max_age_seconds}','60') WHERE agent_id=$1`, failed.AgentID)
+		generationSQL(t, store, `UPDATE posts SET created_at=clock_timestamp()-interval '3 minutes' WHERE id=$1`, failed.SourcePostID)
+		if got, err := store.RetryGeneration(context.Background(), failed.ID); !errors.Is(err, app.ErrForbidden) {
+			t.Fatalf("stale source retry: %+v %v", got, err)
+		}
+	})
+	t.Run("reduced_chain_policy", func(t *testing.T) {
+		store, job, attempt, output := publicationFixture(t, app.OutputPost, "@chain_child_tight a real continuation")
+		peer := socialAgent(t, store, "chain_child_tight", func(p *app.GenerationPolicy) { p.DailyTokenBudget = 500000 })
+		ctx := context.Background()
+		published, err := store.PublishGeneration(ctx, job.ID, job.LeaseVersion, attempt.ID, output)
+		if err != nil || published.Status != app.JobSucceeded {
+			t.Fatalf("root publish: %+v %v", published, err)
+		}
+		var child app.GenerationJob
+		for _, candidate := range socialJobs(t, store) {
+			if candidate.RootJobID == job.ID && candidate.ID != job.ID {
+				child = candidate
+			}
+		}
+		if child.ID == "" {
+			t.Fatal("missing real continuation")
+		}
+		if child.AgentID != peer.AgentID {
+			t.Fatalf("unexpected child: %+v", child)
+		}
+		generationSQL(t, store, `UPDATE generation_jobs SET status='running',lease_version=1,
+			lease_expires_at=clock_timestamp()+interval '1 minute' WHERE id=$1`, child.ID)
+		child = claimJob(t, store, child.ID)
+		childInput, _ := readGenerationContext(t, store, child)
+		childAttempt := admitSpend(t, store, child, childInput)
+		if ok, err := store.SettleGeneration(ctx, childAttempt, app.GenerationOutcome{Failure: app.GenerationCredentials}, ""); err != nil || !ok {
+			t.Fatalf("settle: %v %v", ok, err)
+		}
+		if _, err := store.CompleteGeneration(ctx, child.ID, child.LeaseVersion, childAttempt.ID, 0); err != nil {
+			t.Fatal(err)
+		}
+		failed := claimJob(t, store, child.ID)
+		if failed.Status != app.JobFailed {
+			t.Fatalf("child fixture: %+v", failed)
+		}
+		// Reduce the agent's chain policy under the root's immutable limits.
+		generationSQL(t, store, `UPDATE agent_settings SET policy=jsonb_set(policy,'{max_chain_depth}','0') WHERE agent_id=$1`, failed.AgentID)
+		if got, err := store.RetryGeneration(ctx, failed.ID); !errors.Is(err, app.ErrForbidden) {
+			t.Fatalf("tightened chain retry: %+v %v", got, err)
+		}
+		generationSQL(t, store, `UPDATE agent_settings SET policy=jsonb_set(policy,'{max_chain_depth}','9') WHERE agent_id=$1`, failed.AgentID)
+		if retried, err := store.RetryGeneration(ctx, failed.ID); err != nil || retried.Status != app.JobRetryWait {
+			t.Fatalf("restored chain retry: %+v %v", retried, err)
+		}
+	})
+}
+
+// TestGenerationRetryRealExecution proves the whole chain with the real store
+// and one fake provider call: failed job -> operator retry -> ordinary claim
+// -> acknowledged prior attempt -> fresh reservation -> settlement ->
+// publication, with the old charge retained and attempt 1 conserved.
+func TestGenerationRetryRealExecution(t *testing.T) {
 	store, failed, oldAttempt := retryFixture(t, app.GenerationCredentials)
+	if failed.Status != app.JobFailed || failed.ReasonCode != string(app.GenerationCredentials) {
+		t.Fatalf("fixture job: %+v", failed)
+	}
 	ctx := context.Background()
 	if retried, err := store.RetryGeneration(ctx, failed.ID); err != nil || retried.Status != app.JobRetryWait {
 		t.Fatalf("retry: %+v %v", retried, err)
 	}
-	if got, err := store.claimGeneration(ctx, nil); err != nil || got == nil {
-		t.Fatalf("claim: %+v %v", got, err)
-	}
+	// Run the full worker pass against the real store: Ready, recovery,
+	// expiry, claim, acknowledged prior attempt, reserve, call, settle,
+	// complete and publish. The pass owns the claim itself.
 	claimed := claimJob(t, store, failed.ID)
-	input, _ := readGenerationContext(t, store, claimed)
-	admission, err := store.ReserveGeneration(ctx, claimed.ID, claimed.LeaseVersion, input)
-	if err != nil || admission.Attempt == nil {
-		t.Fatalf("fresh admission: %+v %v", admission, err)
+	providerResult, err := app.DecodeGenerationResult([]byte(`{"decision":"publish","body":"A repaired retry publication result."}`), claimed)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if admission.Attempt.AttemptNumber != 2 {
-		t.Fatalf("attempt continuation: %+v", admission.Attempt)
+	result, execErr := worker.Execute(ctx, store, realProviderFixture{result: providerResult})
+	if execErr != nil {
+		t.Fatalf("execute: %+v %v", result, execErr)
+	}
+	final := claimJob(t, store, failed.ID)
+	// The pass claimed, called and published once; the expired row is the
+	// stale canned-fixture root job, not the retried one.
+	if result.Claimed != 1 || result.Calls != 1 || result.Published != 1 {
+		t.Fatalf("pass summary: %+v", result)
+	}
+	if final.Status != app.JobSucceeded || final.PublishedAttemptID == nil || final.ResultReplyID == nil {
+		t.Fatalf("published job: %+v", final)
+	}
+	// Attempt history is conserved, and the old charge is retained exactly.
+	attempts, err := store.executionAttempts(ctx, failed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts) != 2 || attempts[0].ID != oldAttempt.ID || attempts[1].Status != app.AttemptSucceeded {
+		t.Fatalf("attempt history: %+v", attempts)
 	}
 	if stored := storedSpend(t, store, oldAttempt.ID); stored.AccountedTokens() != oldAttempt.ReservedTokens || stored.Status != app.AttemptFailed {
 		t.Fatalf("retained accounting: %+v", stored)
 	}
 }
 
-// TestGenerationRetryHintDenial proves a settled Retry-After beyond the
-// immutable job expiry can delay but never extend queued work.
-func TestGenerationRetryHintDenial(t *testing.T) {
+// TestGenerationRetryInvalidRecovery proves a failed job whose first attempt
+// was invalid output plus a later provider credentials failure stays within
+// the attempt/invalid caps and remains explicitly retirable after repair.
+func TestGenerationRetryInvalidRecovery(t *testing.T) {
 	store, job, input := spendFixture(t, 500000)
 	ctx := context.Background()
-	hint := time.Now().UTC().Add(2 * time.Hour).Truncate(time.Microsecond)
 	attempt := admitSpend(t, store, job, input)
-	if ok, err := store.SettleGeneration(ctx, attempt, app.GenerationOutcome{Failure: app.GenerationRateLimited, NotBefore: hint}, ""); err != nil || !ok {
+	if ok, err := store.SettleGeneration(ctx, attempt, app.GenerationOutcome{Failure: app.GenerationInvalidOutput}, ""); err != nil || !ok {
+		t.Fatalf("settle: %v %v", ok, err)
+	}
+	if _, err := store.CompleteGeneration(ctx, job.ID, job.LeaseVersion, attempt.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+	if existing := claimJob(t, store, job.ID); existing.Status == app.JobRetryWait {
+		time.Sleep(2200 * time.Millisecond) // Real backoff, no override.
+		got, err := store.ClaimGeneration(ctx)
+		if err != nil || got == nil {
+			t.Fatalf("claim: %+v %v", got, err)
+		}
+		job = claimJob(t, store, job.ID)
+		input, _ = readGenerationContext(t, store, job)
+		second := admitSpend(t, store, job, input)
+		if ok, err := store.SettleGeneration(ctx, second, app.GenerationOutcome{Failure: app.GenerationCredentials}, ""); err != nil || !ok {
+			t.Fatalf("settle: %v %v", ok, err)
+		}
+		if _, err := store.CompleteGeneration(ctx, job.ID, job.LeaseVersion, second.ID, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	failed := claimJob(t, store, job.ID)
+	if failed.Status != app.JobFailed || failed.ReasonCode != string(app.GenerationCredentials) {
+		t.Fatalf("fixture: %+v", failed)
+	}
+	retried, err := store.RetryGeneration(ctx, failed.ID)
+	if err != nil || retried.Status != app.JobRetryWait {
+		t.Fatalf("still eligible within caps: %+v %v", retried, err)
+	}
+}
+
+func TestGenerationRetryRetainedHint(t *testing.T) {
+	store, job, input := spendFixture(t, 500000)
+	ctx := context.Background()
+	hint := time.Now().UTC().Add(45 * time.Minute).Truncate(time.Microsecond)
+	if !hint.Before(job.ExpiresAt) {
+		t.Skip("hint would cross expiry for this run")
+	}
+	attempt := admitSpend(t, store, job, input)
+	if ok, err := store.SettleGeneration(ctx, attempt, app.GenerationOutcome{Failure: app.GenerationCredentials, NotBefore: hint}, ""); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if _, err := store.CompleteGeneration(ctx, job.ID, job.LeaseVersion, attempt.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+	failed := claimJob(t, store, job.ID)
+	if failed.Status != app.JobFailed {
+		t.Fatalf("hint fixture job: %+v", failed)
+	}
+	retried, err := store.RetryGeneration(ctx, failed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !retried.AvailableAt.Equal(app.GenerationInstant(hint)) {
+		t.Fatalf("retained hint not honored: %+v vs %v", retried.AvailableAt, hint)
+	}
+	retained, err := store.LatestGenerationAttempt(ctx, job.ID)
+	if err != nil || retained == nil || retained.NotBefore == nil {
+		t.Fatalf("attempt hint retained: %v", err)
+	}
+	if !retained.NotBefore.Equal(app.GenerationInstant(hint)) {
+		t.Fatalf("attempt hint erasure: %v", retained.NotBefore)
+	}
+}
+
+func TestGenerationRetryAvailabilityFloor(t *testing.T) {
+	store, job, input := spendFixture(t, 500000)
+	ctx := context.Background()
+	attempt := admitSpend(t, store, job, input)
+	if ok, err := store.SettleGeneration(ctx, attempt, app.GenerationOutcome{Failure: app.GenerationCredentials}, ""); err != nil || !ok {
 		t.Fatalf("settle: %v %v", ok, err)
 	}
 	if _, err := store.CompleteGeneration(ctx, job.ID, job.LeaseVersion, attempt.ID, 0); err != nil {
 		t.Fatal(err)
 	}
 	failed := claimJob(t, store, job.ID)
-	if failed.Status != app.JobFailed || failed.ReasonCode != string(app.GenerationRateLimited) {
-		t.Fatalf("hint fixture job: %+v", failed)
+	retried, err := store.RetryGeneration(ctx, failed.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if storedSpend(t, store, attempt.ID).NotBefore == nil {
-		t.Fatal("hint not retained in the failed attempt")
-	}
-	if got, err := store.RetryGeneration(ctx, failed.ID); !errors.Is(err, app.ErrForbidden) {
-		t.Fatalf("hint beyond expiry: %+v %v", got, err)
+	if !retried.AvailableAt.After(app.GenerationInstant(*failed.FinishedAt)) {
+		t.Fatalf("availability did not strictly exceed the finished attempt: %+v vs %v", retried.AvailableAt, *failed.FinishedAt)
 	}
 }
 
@@ -252,50 +483,60 @@ func funcer(err error) string {
 	}
 }
 
+// TestGenerationRetryConcurrency: only one of N concurrent retries may re-queue
+// the failed job. Results and errors from each caller stay paired in a single
+// struct channel so no goroutine can cross another's commit state.
 func TestGenerationRetryConcurrency(t *testing.T) {
 	store, failed, _ := retryFixture(t, app.GenerationCredentials)
 	ctx := context.Background()
-	results := make(chan app.GenerationJob, 4)
-	errs := make(chan error, 4)
+	type retryOutcome struct {
+		job app.GenerationJob
+		err error
+	}
+	results := make(chan retryOutcome, 4)
 	var group sync.WaitGroup
 	start := make(chan struct{})
 	for range 4 {
 		group.Go(func() {
 			<-start
 			got, err := store.RetryGeneration(ctx, failed.ID)
-			results <- got
-			errs <- err
+			results <- retryOutcome{job: got, err: err}
 		})
 	}
 	close(start)
 	group.Wait()
-	queued, invalid := 0, ""
+	queued := 0
 	for range 4 {
-		got, err := <-results, <-errs
+		got := <-results
 		switch {
-		case err == nil && got.Status == app.JobRetryWait:
+		case got.err == nil && got.job.Status == app.JobRetryWait:
 			queued++
-		case errors.Is(err, app.ErrConflict) && got.ID == "":
-		default:
-			invalid = funcer(err) + " " + string(got.Status)
+		case got.err == nil:
+			t.Fatalf("unexpected success: %+v", got.job)
+		case !errors.Is(got.err, app.ErrConflict) || got.job.ID != "":
+			t.Fatalf("loser error: %v %v", got.err, got.job)
 		}
 	}
-	if queued != 1 || invalid != "" || claimJob(t, store, failed.ID).Status != app.JobRetryWait {
-		t.Fatalf("concurrent retried states: %d queued %q", queued, invalid)
+	if queued != 1 || claimJob(t, store, failed.ID).Status != app.JobRetryWait {
+		t.Fatalf("concurrent retried states: %d queued", queued)
 	}
 }
 
 func TestGenerationRetryPauseRace(t *testing.T) {
 	store, failed, _ := retryFixture(t, app.GenerationCredentials)
 	ctx := context.Background()
-	results := make(chan error, 2)
+	type pauseOutcome struct {
+		job app.GenerationJob
+		err error
+	}
+	results := make(chan pauseOutcome, 2)
 	retried := make(chan app.GenerationJob, 2)
 	var group sync.WaitGroup
 	start := make(chan struct{})
 	group.Go(func() {
 		<-start
 		got, err := store.RetryGeneration(ctx, failed.ID)
-		results <- err
+		results <- pauseOutcome{job: got, err: err}
 		retried <- got
 	})
 	group.Go(func() {
@@ -314,16 +555,16 @@ func TestGenerationRetryPauseRace(t *testing.T) {
 	final := claimJob(t, store, failed.ID)
 	proceed := <-retried
 	switch {
-	case rate == nil:
+	case rate.err == nil:
 		if final.Status != app.JobRetryWait || proceed.Status != app.JobRetryWait {
 			t.Fatalf("retry winner state: %+v", final)
 		}
-	case errors.Is(rate, app.ErrForbidden), errors.Is(rate, app.ErrConflict):
+	case errors.Is(rate.err, app.ErrForbidden), errors.Is(rate.err, app.ErrConflict):
 		if final.Status != app.JobFailed || proceed.ID != "" {
 			t.Fatalf("pause winner state: %+v %+v", final, proceed)
 		}
 	default:
-		t.Fatalf("retry error: %v", rate)
+		t.Fatalf("retry error: %v", rate.err)
 	}
 }
 

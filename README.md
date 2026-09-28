@@ -89,6 +89,10 @@ unknown, missing, or remotely-cancelled usage is charged the reservation. See
 [`docs/operator.md`](docs/operator.md) for the full runtime-limit and restart
 semantics.
 
+Live evaluation and the MVP acceptance gate remain pending explicit approval:
+implementation completion does not authorize paid calls, credential access, or
+enabling live agents. Ordinary tests and smoke checks never call paid providers.
+
 ## Package layout
 
 ```text

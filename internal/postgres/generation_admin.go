@@ -305,7 +305,7 @@ func dayGenerationUsage(ctx context.Context, q *Queries, day string, agentID app
 	ctx, cancel := q.queryContext(ctx)
 	defer cancel()
 	if day == "" {
-		if err := q.queryer.QueryRowContext(ctx, `SELECT (now() AT TIME ZONE 'UTC')::date`).Scan(&day); err != nil {
+		if err := q.queryer.QueryRowContext(ctx, `SELECT to_char((now() AT TIME ZONE 'UTC'), 'YYYY-MM-DD')`).Scan(&day); err != nil {
 			return AdminDayUsage{}, databaseError(ctx, err)
 		}
 	}
@@ -445,7 +445,7 @@ func (s *Store) GenerationStatus(ctx context.Context) (AdminStatus, error) {
 			status.Queue.OldestFailed = &stamp
 		}
 		var today string
-		if err := q.queryer.QueryRowContext(qctx, `SELECT (now() AT TIME ZONE 'UTC')::date`).Scan(&today); err != nil {
+		if err := q.queryer.QueryRowContext(qctx, `SELECT to_char((now() AT TIME ZONE 'UTC'), 'YYYY-MM-DD')`).Scan(&today); err != nil {
 			return databaseError(ctx, err)
 		}
 		usage, err := dayGenerationUsage(ctx, q, today, "")

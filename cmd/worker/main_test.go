@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/SophearithSaing/stacktrace-api/internal/postgres"
+	"github.com/SophearithSaing/stacktrace-api/internal/worker"
 )
 
 func TestWorkerUsage(t *testing.T) {
@@ -40,6 +41,23 @@ func TestWorkerRequiresOnlyDatabaseConfiguration(t *testing.T) {
 				t.Fatalf("cancelled connection: %v", err)
 			}
 		})
+	}
+}
+
+func TestServeStartupErrorsAreSafe(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://user:private-password@127.0.0.1:1/database?sslmode=disable")
+	t.Setenv("TOGETHER_API_KEY", "")
+	var output bytes.Buffer
+	err := run(context.Background(), []string{"serve"}, &output)
+	if !errors.Is(err, worker.ExecutionConfiguration) || strings.Contains(err.Error(), "private-password") || output.Len() != 0 {
+		t.Fatalf("missing provider key: %v", err)
+	}
+
+	t.Setenv("TOGETHER_API_KEY", "provider-key")
+	t.Setenv("WORKER_HTTP_ADDR", "not-an-address")
+	err = run(context.Background(), []string{"serve"}, &output)
+	if !errors.Is(err, worker.ExecutionConfiguration) || strings.Contains(err.Error(), "provider-key") || output.Len() != 0 {
+		t.Fatalf("invalid listener address: %v", err)
 	}
 }
 

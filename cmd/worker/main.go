@@ -48,7 +48,7 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 	}
 	cfg, err := config.Load(role)
 	if err != nil {
-		if role == config.WorkerExecute {
+		if role == config.WorkerExecute || role == config.WorkerServe {
 			return worker.ExecutionConfiguration
 		}
 		return err
@@ -64,7 +64,7 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 	}
 	store, err := postgres.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
-		if role == config.WorkerExecute {
+		if role == config.WorkerExecute || role == config.WorkerServe {
 			if ctx.Err() != nil {
 				return worker.ExecutionStopped
 			}

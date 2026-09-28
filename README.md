@@ -81,8 +81,13 @@ calls. `GET /healthz` is liveness-only; `GET /readyz` reports whether the servic
 has completed a healthy cycle recently and can reach the database/schema. Fatal
 provider credentials/configuration/accounting errors stop the service; operator
 restart is required after repair. Transient storage errors make the service unready
-until the next healthy pass. No live-provider evaluation or autonomous MVP gate
-is claimed yet.
+until the next healthy pass.
+
+Limits: each provider call has a 45-second network deadline and a full pass has a
+10-minute execution timeout. The worker reserves 132,096 tokens before each call;
+unknown, missing, or remotely-cancelled usage is charged the reservation. See
+[`docs/operator.md`](docs/operator.md) for the full runtime-limit and restart
+semantics.
 
 ## Package layout
 

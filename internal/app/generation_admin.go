@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strconv"
 	"time"
 )
 
@@ -35,14 +34,12 @@ var allowedPersonaFields = map[string]bool{
 	"created_at":   true,
 }
 
-// DecodeAdminPersona turns one strict persona document into a Persona without
-// its agent: the caller must attach a validated target UUID from arguments so a
-// file can never point at an unexpected account. Unknown, duplicate, missing,
-// null, case-alias and trailing input all fail with safe, non-echoing errors.
-// Domain validation rules (UTF-8 bytes, bounded text, 1-20 lowercase slug tags)
-// still apply and are checked explicitly here because the agent UUID is only
-// validated separately at the trusted store boundary.
-func DecodeAdminPersona(data []byte) (Persona, error) {
+// DecodeAdminPersona turns one strict persona document into a Persona. The
+// caller supplies the validated target agent UUID; files cannot redirect work to
+// another account. Unknown, duplicate, missing, null, case-alias and trailing
+// input all fail with safe, non-echoing errors. Domain validation rules reuse
+// Persona.Validate so the trusted CLI and storage boundaries stay consistent.
+func DecodeAdminPersona(data []byte, agentID ID) (Persona, error) {
 	if len(data) > MaxAdminPersonaFileBytes {
 		return Persona{}, errors.New("persona file exceeds size limit")
 	}
@@ -55,31 +52,25 @@ func DecodeAdminPersona(data []byte) (Persona, error) {
 			return Persona{}, errors.New("invalid persona payload")
 		}
 	}
-	var persona Persona
+	persona := Persona{AgentID: agentID}
 	if raw, ok := fields["version"]; ok {
-		num, err := jsonNumberInt(raw)
-		if err != nil || num < 1 {
+		if err := json.Unmarshal(raw, &persona.Version); err != nil {
 			return Persona{}, errors.New("invalid persona payload")
 		}
-		persona.Version = num
 	} else {
 		return Persona{}, errors.New("invalid persona payload")
 	}
 	if raw, ok := fields["instructions"]; ok {
-		var instructions string
-		if err := json.Unmarshal(raw, &instructions); err != nil {
+		if err := json.Unmarshal(raw, &persona.Instructions); err != nil {
 			return Persona{}, errors.New("invalid persona payload")
 		}
-		persona.Instructions = instructions
 	} else {
 		return Persona{}, errors.New("invalid persona payload")
 	}
 	if raw, ok := fields["topic_tags"]; ok {
-		var tags []string
-		if err := json.Unmarshal(raw, &tags); err != nil {
+		if err := json.Unmarshal(raw, &persona.TopicTags); err != nil {
 			return Persona{}, errors.New("invalid persona payload")
 		}
-		persona.TopicTags = tags
 	} else {
 		return Persona{}, errors.New("invalid persona payload")
 	}
@@ -96,45 +87,10 @@ func DecodeAdminPersona(data []byte) (Persona, error) {
 	} else {
 		return Persona{}, errors.New("invalid persona payload")
 	}
-	if err := validateAdminPersona(persona); err != nil {
+	if err := persona.Validate(); err != nil {
 		return Persona{}, errors.New("invalid persona payload")
 	}
 	return persona, nil
-}
-
-func validateAdminPersona(p Persona) error {
-	if p.Version < 1 || p.Version > 2147483647 || p.CreatedAt.IsZero() {
-		return fmt.Errorf("invalid persona identity or creation time")
-	}
-	if !validGenerationText(p.Instructions, 16000) {
-		return fmt.Errorf("persona instructions must contain 1-16000 UTF-8 bytes without NUL")
-	}
-	if len(p.TopicTags) < 1 || len(p.TopicTags) > 20 {
-		return fmt.Errorf("persona must have 1-20 topic tags")
-	}
-	seen := make(map[string]bool)
-	for _, tag := range p.TopicTags {
-		if len(tag) < 1 || len(tag) > 64 || tag != lowerASCII(tag) || seen[tag] {
-			return fmt.Errorf("persona tags must be unique lowercase ASCII slugs of 1-64 bytes")
-		}
-		for i := range len(tag) {
-			if !isTagCharacter(tag[i]) {
-				return fmt.Errorf("persona tags must contain only ASCII letters, digits or underscores")
-			}
-		}
-		seen[tag] = true
-	}
-	return nil
-}
-
-func lowerASCII(s string) string {
-	b := []byte(s)
-	for i := range b {
-		if b[i] >= 'A' && b[i] <= 'Z' {
-			b[i] += 'a' - 'A'
-		}
-	}
-	return string(b)
 }
 
 // DecodeAdminPolicy reuses the bounded strict generation policy boundary with
@@ -194,17 +150,4 @@ func parseStrictJSONObject(data []byte) (map[string]json.RawMessage, error) {
 		return nil, fmt.Errorf("payload has trailing data")
 	}
 	return fields, nil
-}
-
-// jsonNumberInt parses a JSON number as a positive 32-bit integer.
-func jsonNumberInt(raw json.RawMessage) (int, error) {
-	var num json.Number
-	if err := json.Unmarshal(raw, &num); err != nil {
-		return 0, err
-	}
-	value, err := strconv.ParseInt(string(num), 10, 31)
-	if err != nil {
-		return 0, err
-	}
-	return int(value), nil
 }

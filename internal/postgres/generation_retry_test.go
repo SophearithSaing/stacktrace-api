@@ -87,8 +87,10 @@ func TestGenerationRetryDenials(t *testing.T) {
 	})
 	t.Run("accounting_retained", func(t *testing.T) {
 		store, failed, _ := retryFixture(t, app.GenerationCredentials)
-		generationAttempt(t, store, failed, 2)
-		generationSQL(t, store, `UPDATE generation_attempts SET error_code='unsupported_accounting' WHERE job_id=$1`, failed.ID)
+		generationSQL(t, store, `INSERT INTO generation_attempts(id,job_id,attempt_number,lease_version,provider,model,
+			context_hash,context_builder_version,budget_day,reserved_tokens,status,started_at,finished_at,error_code)
+			SELECT $1,job_id,attempt_number+1,lease_version,provider,model,context_hash,context_builder_version,budget_day,reserved_tokens,'failed',started_at,finished_at,'unsupported_accounting'
+			FROM generation_attempts WHERE job_id=$2`, app.NewID(), failed.ID)
 		if got, err := store.RetryGeneration(context.Background(), failed.ID); !errors.Is(err, app.ErrForbidden) {
 			t.Fatalf("retained accounting retry: %+v %v", got, err)
 		}
@@ -113,9 +115,11 @@ func TestGenerationRetryDenials(t *testing.T) {
 		store, failed, _ := retryFixture(t, app.GenerationCredentials)
 		// A successful skip attempt must not ride the success bypass: its
 		// outcome belongs to skipped work.
-		generationAttempt(t, store, failed, 2)
-		generationSQL(t, store, `UPDATE generation_attempts SET status='succeeded',finished_at=started_at,
-			output_digest='generation_output_v1:'||repeat('a',64),decision='skip',skip_reason='not_relevant' WHERE job_id=$1`, failed.ID)
+		generationSQL(t, store, `INSERT INTO generation_attempts(id,job_id,attempt_number,lease_version,provider,model,
+			context_hash,context_builder_version,budget_day,reserved_tokens,status,started_at,finished_at,output_digest,decision,skip_reason)
+			SELECT $1,job_id,attempt_number+1,lease_version,provider,model,context_hash,context_builder_version,budget_day,reserved_tokens,'succeeded',started_at,finished_at,
+			'generation_output_v1:'||repeat('a',64),'skip','not_relevant'
+			FROM generation_attempts WHERE job_id=$2 ORDER BY attempt_number DESC LIMIT 1`, app.NewID(), failed.ID)
 		generationSQL(t, store, `UPDATE generation_jobs SET reason_code='outcome_unavailable' WHERE id=$1`, failed.ID)
 		if got, err := store.RetryGeneration(context.Background(), failed.ID); !errors.Is(err, app.ErrForbidden) {
 			t.Fatalf("skip attempt in failed row: %+v %v", got, err)
@@ -145,8 +149,10 @@ func TestGenerationRetryDenials(t *testing.T) {
 	t.Run("attempt_limit", func(t *testing.T) {
 		store, failed, _ := retryFixture(t, app.GenerationCredentials)
 		for range app.MaxGenerationAttempts - 1 {
-			generationAttempt(t, store, failed, 2)
-			generationSQL(t, store, `UPDATE generation_attempts SET status='failed',finished_at=started_at,error_code='provider_credentials' WHERE job_id=$1`, failed.ID)
+			generationSQL(t, store, `INSERT INTO generation_attempts(id,job_id,attempt_number,lease_version,provider,model,
+				context_hash,context_builder_version,budget_day,reserved_tokens,status,started_at,finished_at,error_code)
+				SELECT $1,job_id,attempt_number+1,lease_version,provider,model,context_hash,context_builder_version,budget_day,reserved_tokens,'failed',started_at,finished_at,error_code
+				FROM generation_attempts WHERE job_id=$2 ORDER BY attempt_number DESC LIMIT 1`, app.NewID(), failed.ID)
 		}
 		if got, err := store.RetryGeneration(context.Background(), failed.ID); !errors.Is(err, app.ErrForbidden) {
 			t.Fatalf("attempt-limited retry: %+v %v", got, err)

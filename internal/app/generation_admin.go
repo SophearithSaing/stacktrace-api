@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"time"
+	"unicode/utf8"
 )
 
 // Admin file inputs are bounded before decoding and reject unknown, duplicate
@@ -42,6 +43,9 @@ var allowedPersonaFields = map[string]bool{
 func DecodeAdminPersona(data []byte, agentID ID) (Persona, error) {
 	if len(data) > MaxAdminPersonaFileBytes {
 		return Persona{}, errors.New("persona file exceeds size limit")
+	}
+	if !utf8.Valid(data) {
+		return Persona{}, errors.New("invalid persona payload")
 	}
 	fields, err := parseStrictJSONObject(data)
 	if err != nil {

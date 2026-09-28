@@ -34,7 +34,6 @@ func TestDecodeAdminPersonaStrictness(t *testing.T) {
 		"float version":  `{"version":1.5,"instructions":"x","topic_tags":["a"],"created_at":"2026-09-28T12:00:00Z"}`,
 		"quoted version": `{"version":"1","instructions":"x","topic_tags":["a"],"created_at":"2026-09-28T12:00:00Z"}`,
 		"overflow":       `{"version":2147483648,"instructions":"x","topic_tags":["a"],"created_at":"2026-09-28T12:00:00Z"}`,
-		"invalid utf8":   "{\"version\":1,\"instructions\":\"x\\xffx\",\"topic_tags\":[\"a\"],\"created_at\":\"2026-09-28T12:00:00Z\"}",
 		"bad agent":      `{"version":1,"instructions":"x","topic_tags":["a"],"created_at":"2026-09-28T12:00:00Z"}`,
 	}
 	for name, payload := range broken {
@@ -53,6 +52,18 @@ func TestDecodeAdminPersonaStrictness(t *testing.T) {
 	}
 	if _, err := DecodeAdminPersona([]byte(`not json`), agentID); err == nil {
 		t.Fatal("non-JSON accepted")
+	}
+}
+
+func TestDecodeAdminPersonaRejectsInvalidUTF8(t *testing.T) {
+	agentID := NewID()
+	base := []byte(`{"version":1,"instructions":"x","topic_tags":["a"],"created_at":"2026-09-28T12:00:00Z"}`)
+	payload := make([]byte, 0, len(base)+1)
+	payload = append(payload, []byte(`{"version":1,"instructions":"x`)...)
+	payload = append(payload, 0xff)
+	payload = append(payload, []byte(`x","topic_tags":["a"],"created_at":"2026-09-28T12:00:00Z"}`)...)
+	if _, err := DecodeAdminPersona(payload, agentID); err == nil {
+		t.Fatal("accepted persona with invalid UTF-8 byte")
 	}
 }
 

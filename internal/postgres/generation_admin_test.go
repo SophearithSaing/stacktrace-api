@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"math"
+	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -114,6 +116,10 @@ func TestAdminCursorValidation(t *testing.T) {
 	}
 	if _, err := DecodeAdminCursor("0001-01-01T00:00:00Z|00000000-0000-4000-8000-000000000001"); err == nil {
 		t.Fatal("zero-time cursor accepted")
+	}
+	long := token.token() + strings.Repeat("x", adminJobCursorMaxLen)
+	if _, err := DecodeAdminCursor(long); err == nil {
+		t.Fatal("overlong cursor accepted")
 	}
 }
 
@@ -309,5 +315,120 @@ func TestAdminStatusOldestDueIgnoresFutureWork(t *testing.T) {
 	}
 	if status.Queue.OldestDue != nil {
 		t.Fatalf("future work reported as due: %v", status.Queue.OldestDue)
+	}
+}
+
+func testStoreInTimezone(t *testing.T, tz string) *Store {
+	t.Helper()
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set TEST_DATABASE_URL to run PostgreSQL integration tests")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	admin, err := Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { admin.Close() })
+	schema := "test_" + strings.ReplaceAll(string(app.NewID()), "-", "")
+	if _, err := admin.db.ExecContext(ctx, "CREATE SCHEMA "+schema); err != nil {
+		t.Fatal("could not create isolated test schema")
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := admin.db.ExecContext(ctx, "DROP SCHEMA "+schema+" CASCADE"); err != nil {
+			t.Error("could not remove isolated test schema")
+		}
+	})
+	parsed, err := url.Parse(databaseURL)
+	if err != nil {
+		t.Fatal("invalid test database URL")
+	}
+	query := parsed.Query()
+	query.Set("search_path", schema)
+	query.Set("timezone", tz)
+	parsed.RawQuery = query.Encode()
+	store, err := Open(ctx, parsed.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func TestAdminStatusUsesUTCDayRegardlessOfSessionTimezone(t *testing.T) {
+	for _, tz := range []string{"UTC", "America/New_York", "Pacific/Auckland"} {
+		t.Run(tz, func(t *testing.T) {
+			store := testStoreInTimezone(t, tz)
+			ctx := context.Background()
+			now := time.Now().UTC()
+			agentID := app.NewID()
+			if err := store.CreateAccount(ctx, app.Account{ID: agentID, Type: app.AccountAgent, Handle: "tz_agent", DisplayName: "TZ", CreatedAt: now, UpdatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.CreatePersona(ctx, app.Persona{AgentID: agentID, Version: 1, Instructions: "x", TopicTags: []string{"go"}, CreatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.InitializeAgentSettings(ctx, app.AgentSettings{AgentID: agentID, PersonaVersion: 1, Enabled: true, Policy: generationPolicy(), UpdatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			status, err := store.GenerationStatus(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := time.Now().UTC().Format(time.DateOnly)
+			if status.TodayUsage.Day != want {
+				t.Fatalf("timezone %s: status day %q != UTC %q", tz, status.TodayUsage.Day, want)
+			}
+			usage, err := store.DayGenerationUsage(ctx, "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if usage.Day != want {
+				t.Fatalf("timezone %s: default usage day %q != UTC %q", tz, usage.Day, want)
+			}
+		})
+	}
+}
+
+func TestAdminStatusWithSingleConnection(t *testing.T) {
+	store, _, _ := generationSetup(t)
+	store.db.SetMaxOpenConns(1)
+	ctx := context.Background()
+	if _, err := store.GenerationStatus(ctx); err != nil {
+		t.Fatalf("status with max open conns=1: %v", err)
+	}
+	if _, err := store.DayGenerationUsage(ctx, "", ""); err != nil {
+		t.Fatalf("usage with max open conns=1: %v", err)
+	}
+}
+
+func TestAdminStatusEqualOldestDueAndFailed(t *testing.T) {
+	store, persona, _ := generationSetup(t)
+	ctx := context.Background()
+	agentID := persona.AgentID
+	now := time.Now().UTC()
+	dueID := app.NewID()
+	failedID := app.NewID()
+	generationSQL(t, store, `INSERT INTO generation_jobs(id,agent_id,persona_version,trigger_kind,trigger_key,output_kind,root_job_id,chain_depth,max_chain_depth,max_chain_jobs,status,available_at,expires_at,lease_version,created_at)
+		VALUES($1,$2,1,'scheduled',$3,'post',$1,0,2,5,'pending',$4,$5,0,$6)`,
+		dueID, agentID, string(app.NewID()), now.Add(-time.Minute), now.Add(time.Hour), now)
+	generationSQL(t, store, `INSERT INTO generation_jobs(id,agent_id,persona_version,trigger_kind,trigger_key,output_kind,root_job_id,chain_depth,max_chain_depth,max_chain_jobs,status,available_at,expires_at,lease_version,created_at,finished_at,reason_code)
+		VALUES($1,$2,1,'scheduled',$3,'post',$1,0,2,5,'failed',$4,$5,1,$6,$6,'provider_credentials')`,
+		failedID, agentID, string(app.NewID()), now.Add(-time.Minute), now.Add(time.Hour), now)
+	status, err := store.GenerationStatus(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Queue.OldestDue == nil || status.Queue.OldestFailed == nil {
+		t.Fatalf("missing oldest timestamps: due=%v failed=%v", status.Queue.OldestDue, status.Queue.OldestFailed)
+	}
+	if !status.Queue.OldestDue.Equal(*status.Queue.OldestFailed) {
+		t.Fatalf("oldest timestamps differ: due=%v failed=%v", status.Queue.OldestDue, status.Queue.OldestFailed)
 	}
 }

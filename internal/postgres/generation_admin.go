@@ -22,6 +22,7 @@ const (
 	adminJobPageSize     = 64
 	adminAttemptPageSize = app.MaxGenerationAttempts + 1 // One page detects overflow.
 	adminUsageAgentLimit = maxConfiguredAgents
+	adminJobCursorMaxLen = 256
 )
 
 // AdminJobCursor is an opaque keyset cursor over (created_at,id): operator-only
@@ -36,6 +37,9 @@ type AdminJobCursor struct {
 // key.
 func DecodeAdminCursor(token string) (AdminJobCursor, error) {
 	var cursor AdminJobCursor
+	if len(token) > adminJobCursorMaxLen {
+		return cursor, invalidGeneration("cursor")
+	}
 	parts := strings.SplitN(token, "|", 2)
 	if len(parts) != 2 {
 		return cursor, invalidGeneration("cursor")
@@ -233,11 +237,10 @@ type AdminAgentUsage struct {
 
 // DayGenerationUsage reports one UTC budget day through a consistent snapshot.
 func (s *Store) DayGenerationUsage(ctx context.Context, day string, agentID app.ID) (AdminDayUsage, error) {
-	if day == "" {
-		day = time.Now().UTC().Format(time.DateOnly)
-	}
-	if _, err := time.Parse(time.DateOnly, day); err != nil {
-		return AdminDayUsage{}, invalidGeneration("day")
+	if day != "" {
+		if _, err := time.Parse(time.DateOnly, day); err != nil {
+			return AdminDayUsage{}, invalidGeneration("day")
+		}
 	}
 	if agentID != "" {
 		if _, err := app.ParseID(string(agentID)); err != nil {
@@ -301,6 +304,11 @@ func countGenerationConfiguration(ctx context.Context, q *Queries) (configured, 
 func dayGenerationUsage(ctx context.Context, q *Queries, day string, agentID app.ID) (AdminDayUsage, error) {
 	ctx, cancel := q.queryContext(ctx)
 	defer cancel()
+	if day == "" {
+		if err := q.queryer.QueryRowContext(ctx, `SELECT (now() AT TIME ZONE 'UTC')::date`).Scan(&day); err != nil {
+			return AdminDayUsage{}, databaseError(ctx, err)
+		}
+	}
 	usage := AdminDayUsage{Day: day}
 	var agentFilter any
 	if agentID != "" {
@@ -436,11 +444,11 @@ func (s *Store) GenerationStatus(ctx context.Context) (AdminStatus, error) {
 			stamp := oldestFailed.Time
 			status.Queue.OldestFailed = &stamp
 		}
-		var today time.Time
-		if err := q.queryer.QueryRowContext(qctx, `SELECT current_date`).Scan(&today); err != nil {
+		var today string
+		if err := q.queryer.QueryRowContext(qctx, `SELECT (now() AT TIME ZONE 'UTC')::date`).Scan(&today); err != nil {
 			return databaseError(ctx, err)
 		}
-		usage, err := dayGenerationUsage(ctx, q, today.UTC().Format(time.DateOnly), "")
+		usage, err := dayGenerationUsage(ctx, q, today, "")
 		if err != nil {
 			return err
 		}

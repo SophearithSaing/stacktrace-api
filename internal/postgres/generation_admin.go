@@ -2,7 +2,10 @@ package postgres
 
 import (
 	"context"
-	"fmt"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"math"
 	"strings"
 	"time"
 
@@ -20,8 +23,6 @@ const (
 	adminAttemptPageSize = app.MaxGenerationAttempts + 1 // One page detects overflow.
 	adminUsageAgentLimit = maxConfiguredAgents
 )
-
-var errAdminStatusSet = invalidGeneration("status")
 
 // AdminJobCursor is an opaque keyset cursor over (created_at,id): operator-only
 // cursors stay bounded, tie-safe and do not need browser HMAC signing.
@@ -43,10 +44,13 @@ func DecodeAdminCursor(token string) (AdminJobCursor, error) {
 	if err != nil {
 		return cursor, invalidGeneration("cursor")
 	}
+	if at.IsZero() {
+		return cursor, invalidGeneration("cursor")
+	}
 	if _, err := app.ParseID(parts[1]); err != nil {
 		return cursor, invalidGeneration("cursor")
 	}
-	return AdminJobCursor{CreatedAt: at, JobID: app.ID(parts[1])}, nil
+	return AdminJobCursor{CreatedAt: at.UTC(), JobID: app.ID(parts[1])}, nil
 }
 
 func (c AdminJobCursor) token() string {
@@ -90,7 +94,10 @@ func (s *Store) ListGenerationJobs(ctx context.Context, filter AdminJobFilter) (
 		default:
 			return invalidGeneration("status")
 		}
-		if filter.Cursor != nil && filter.Cursor.JobID != "" {
+		if filter.Cursor != nil {
+			if filter.Cursor.CreatedAt.IsZero() {
+				return invalidGeneration("cursor")
+			}
 			if _, err := app.ParseID(string(filter.Cursor.JobID)); err != nil {
 				return invalidGeneration("cursor")
 			}
@@ -113,34 +120,46 @@ func (s *Store) ListGenerationJobs(ctx context.Context, filter AdminJobFilter) (
 		if filter.Status != "" {
 			status = filter.Status
 		}
-		rows, err := q.queryer.QueryContext(ctx, `SELECT j.id FROM generation_jobs j`+predicate,
-			agent, status, at, cursorID, validAdminLimit(filter.Limit)+1)
+		limit := validAdminLimit(filter.Limit)
+		rows, err := q.queryer.QueryContext(ctx, `SELECT j.id,j.created_at FROM generation_jobs j`+predicate,
+			agent, status, at, cursorID, limit+1)
 		if err != nil {
 			return databaseError(ctx, err)
 		}
-		ids, err := contextIDs(ctx, rows)
-		if err != nil {
-			return err
+		defer rows.Close()
+		type jobKey struct {
+			id        app.ID
+			createdAt time.Time
 		}
-		if len(ids) == 0 {
+		var keys []jobKey
+		for rows.Next() {
+			var key jobKey
+			if err := rows.Scan(&key.id, &key.createdAt); err != nil {
+				return databaseError(ctx, err)
+			}
+			keys = append(keys, key)
+		}
+		if err := rows.Err(); err != nil {
+			return databaseError(ctx, err)
+		}
+		if len(keys) == 0 {
 			return nil
 		}
 		var more bool
-		if len(ids) > validAdminLimit(filter.Limit) {
-			ids, more = ids[:validAdminLimit(filter.Limit)], true
+		if len(keys) > limit {
+			keys, more = keys[:limit], true
 		}
-		for _, id := range ids {
-			job, err := q.GenerationJobByID(ctx, id)
+		jobs = make([]app.GenerationJob, 0, len(keys))
+		for _, key := range keys {
+			job, err := q.GenerationJobByID(ctx, key.id)
 			if err != nil {
 				return err
 			}
 			jobs = append(jobs, job)
 		}
 		if more {
-			token, err := q.adminCursorToken(ctx, ids[len(ids)-1])
-			if err != nil {
-				return err
-			}
+			last := keys[len(keys)-1]
+			token := AdminJobCursor{CreatedAt: last.createdAt.UTC(), JobID: last.id}.token()
 			next = &token
 		}
 		return nil
@@ -151,28 +170,18 @@ func (s *Store) ListGenerationJobs(ctx context.Context, filter AdminJobFilter) (
 	return jobs, next, nil
 }
 
-// adminCursorToken re-reads the persisted key of the page's last row so the
-// cursor stays tie-safe against UUID ordering and encoded timestamps.
-func (q *Queries) adminCursorToken(ctx context.Context, id app.ID) (string, error) {
-	ctx, cancel := q.queryContext(ctx)
-	defer cancel()
-	job, err := q.GenerationJobByID(ctx, id)
-	if err != nil {
-		return "", err
-	}
-	return AdminJobCursor{CreatedAt: job.CreatedAt.UTC(), JobID: job.ID}.token(), nil
-}
-
 // AdminJobInspection bounds one job with its full attempt page; the attempted
 // history, digest decision markers and pagination identity are operator-only.
 type AdminJobInspection struct {
-	Job      app.GenerationJob
-	Attempts []app.GenerationAttempt
-	Complete bool // Attempt pages could exceed MaxGenerationAttempts.
+	Job      app.GenerationJob       `json:"job"`
+	Attempts []app.GenerationAttempt `json:"attempts"`
+	Complete bool                    `json:"complete"`
 }
 
 // InspectGenerationJob returns one bounded job with at most one page of
-// attempts, ordered by attempt number. Reads grant no authority.
+// attempts, ordered by attempt number. Reads grant no authority. Complete is
+// true only when every attempt fits in the page; otherwise the result is
+// truncated to MaxGenerationAttempts and Complete is false.
 func (s *Store) InspectGeneration(ctx context.Context, id app.ID) (AdminJobInspection, error) {
 	var inspection AdminJobInspection
 	err := s.readSnapshot(ctx, func(q *Queries) error {
@@ -188,10 +197,12 @@ func (s *Store) InspectGeneration(ctx context.Context, id app.ID) (AdminJobInspe
 			return err
 		}
 		if len(attempts) > app.MaxGenerationAttempts {
+			inspection.Attempts = attempts[:app.MaxGenerationAttempts]
+			inspection.Complete = false
+		} else {
 			inspection.Attempts = attempts
-			return nil // Overflow stays readable history, bounded to the page.
+			inspection.Complete = true
 		}
-		inspection.Attempts = attempts
 		return nil
 	})
 	if err != nil {
@@ -220,8 +231,7 @@ type AdminAgentUsage struct {
 	ChargedTokens int64  `json:"charged_tokens"`
 }
 
-// DayGenerationUsage reports one UTC budget day. Builds only aggregate rows
-// into the bounded fleet limit; called from one consistent snapshot.
+// DayGenerationUsage reports one UTC budget day through a consistent snapshot.
 func (s *Store) DayGenerationUsage(ctx context.Context, day string, agentID app.ID) (AdminDayUsage, error) {
 	if day == "" {
 		day = time.Now().UTC().Format(time.DateOnly)
@@ -236,50 +246,126 @@ func (s *Store) DayGenerationUsage(ctx context.Context, day string, agentID app.
 	}
 	var usage AdminDayUsage
 	err := s.readSnapshot(ctx, func(q *Queries) error {
-		ctx, cancel := q.queryContext(ctx)
-		defer cancel()
-		usage.Day = day
-		var agentFilter any
-		if agentID != "" {
-			agentFilter = agentID
-		}
-		rows, err := q.queryer.QueryContext(ctx, `WITH spent AS (
-			SELECT j.agent_id,
-			CASE WHEN t.status IN ('reserved','unknown') OR t.input_tokens IS NULL OR t.output_tokens IS NULL
-			OR t.input_tokens<1 OR t.input_tokens>$3 OR t.output_tokens<0 OR t.output_tokens>$4 OR t.error_code='unsupported_accounting'
-			THEN NULL ELSE t.input_tokens+t.output_tokens END AS known,
-			CASE WHEN t.status IN ('reserved','unknown') OR t.input_tokens IS NULL OR t.output_tokens IS NULL
-			OR t.input_tokens<1 OR t.input_tokens>$3 OR t.output_tokens<0 OR t.output_tokens>$4 OR t.error_code='unsupported_accounting'
-			THEN t.reserved_tokens ELSE t.input_tokens+t.output_tokens END AS charged
-			FROM generation_attempts t JOIN generation_jobs j ON j.id=t.job_id
-			WHERE t.budget_day=$2::date)
-			SELECT agent_id,count(*)::integer,COALESCE(sum(known),0),COALESCE(sum(charged),0)
-			FROM spent WHERE ($1::uuid IS NULL OR agent_id=$1)
-			GROUP BY agent_id ORDER BY agent_id LIMIT $5`,
-			agentFilter, day, llm.MaxInputTokens, llm.MaxOutputTokens, adminUsageAgentLimit+1)
-		if err != nil {
-			return databaseError(ctx, err)
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var row AdminAgentUsage
-			if err := rows.Scan(&row.AgentID, &row.Attempts, &row.KnownTokens, &row.ChargedTokens); err != nil {
-				return databaseError(ctx, err)
-			}
-			if len(usage.Agents) == adminUsageAgentLimit {
-				return fmt.Errorf("generation usage exceeds %d agents", adminUsageAgentLimit)
-			}
-			usage.Agents = append(usage.Agents, row)
-			usage.Attempts += row.Attempts
-			usage.KnownTokens += row.KnownTokens
-			usage.ChargedTokens += row.ChargedTokens
-		}
-		return databaseError(ctx, rows.Err())
+		var err error
+		usage, err = dayGenerationUsage(ctx, q, day, agentID)
+		return err
 	})
 	if err != nil {
 		return AdminDayUsage{}, err
 	}
 	return usage, nil
+}
+
+// countGenerationConfiguration is the shared validation/counting logic used by
+// CheckGenerationConfiguration and GenerationStatus. It runs inside an existing
+// Queries transaction and never starts its own.
+func countGenerationConfiguration(ctx context.Context, q *Queries) (configured, enabled int, err error) {
+	ctx, cancel := q.queryContext(ctx)
+	defer cancel()
+	rows, err := q.queryer.QueryContext(ctx, `SELECT s.agent_id,s.persona_version,s.enabled,
+		CASE WHEN octet_length(s.policy::text)<=8192 THEN s.policy END,s.next_post_at,
+		COALESCE(to_char(s.schedule_date,'YYYY-MM-DD'),''),s.remaining_slots,s.last_published_at,s.updated_at,
+		p.instructions,CASE WHEN octet_length(to_json(p.topic_tags)::text)<=4096 THEN to_json(p.topic_tags) END,p.created_at,a.type
+		FROM agent_settings s LEFT JOIN agent_personas p ON p.agent_id=s.agent_id AND p.version=s.persona_version
+		LEFT JOIN accounts a ON a.id=s.agent_id ORDER BY s.agent_id LIMIT $1`, maxConfiguredAgents+1)
+	if err != nil {
+		return 0, 0, databaseError(ctx, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		if configured == maxConfiguredAgents {
+			return 0, 0, errors.New("generation configuration exceeds 1000 agents")
+		}
+		var settings app.AgentSettings
+		var persona app.Persona
+		var policy, tags []byte
+		var accountType app.AccountType
+		if err := rows.Scan(&settings.AgentID, &settings.PersonaVersion, &settings.Enabled, &policy,
+			&settings.NextPostAt, &settings.ScheduleDate, &settings.RemainingSlots, &settings.LastPublishedAt, &settings.UpdatedAt,
+			&persona.Instructions, &tags, &persona.CreatedAt, &accountType); err != nil {
+			return 0, 0, databaseError(ctx, err)
+		}
+		persona.AgentID, persona.Version = settings.AgentID, settings.PersonaVersion
+		settings.Policy, err = app.DecodeGenerationPolicy(policy)
+		if err != nil || json.Unmarshal(tags, &persona.TopicTags) != nil || persona.Validate() != nil || settings.Validate() != nil || accountType != app.AccountAgent {
+			return 0, 0, app.ErrUnavailable
+		}
+		configured++
+		if settings.Enabled {
+			enabled++
+		}
+	}
+	return configured, enabled, databaseError(ctx, rows.Err())
+}
+
+func dayGenerationUsage(ctx context.Context, q *Queries, day string, agentID app.ID) (AdminDayUsage, error) {
+	ctx, cancel := q.queryContext(ctx)
+	defer cancel()
+	usage := AdminDayUsage{Day: day}
+	var agentFilter any
+	if agentID != "" {
+		agentFilter = agentID
+	}
+	rows, err := q.queryer.QueryContext(ctx, `WITH spent AS (
+		SELECT j.agent_id,
+		CASE WHEN t.status IN ('reserved','unknown') OR t.input_tokens IS NULL OR t.output_tokens IS NULL
+		OR t.input_tokens<1 OR t.input_tokens>$3 OR t.output_tokens<0 OR t.output_tokens>$4 OR t.error_code='unsupported_accounting'
+		THEN NULL ELSE t.input_tokens+t.output_tokens END AS known,
+		CASE WHEN t.status IN ('reserved','unknown') OR t.input_tokens IS NULL OR t.output_tokens IS NULL
+		OR t.input_tokens<1 OR t.input_tokens>$3 OR t.output_tokens<0 OR t.output_tokens>$4 OR t.error_code='unsupported_accounting'
+		THEN t.reserved_tokens ELSE t.input_tokens+t.output_tokens END AS charged
+		FROM generation_attempts t JOIN generation_jobs j ON j.id=t.job_id
+		WHERE t.budget_day=$2::date)
+		SELECT agent_id,count(*)::integer,COALESCE(sum(known),0),COALESCE(sum(charged),0)
+		FROM spent WHERE ($1::uuid IS NULL OR agent_id=$1)
+		GROUP BY agent_id ORDER BY agent_id LIMIT $5`,
+		agentFilter, day, llm.MaxInputTokens, llm.MaxOutputTokens, adminUsageAgentLimit+1)
+	if err != nil {
+		return AdminDayUsage{}, databaseError(ctx, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var row AdminAgentUsage
+		if err := rows.Scan(&row.AgentID, &row.Attempts, &row.KnownTokens, &row.ChargedTokens); err != nil {
+			return AdminDayUsage{}, databaseError(ctx, err)
+		}
+		if len(usage.Agents) == adminUsageAgentLimit {
+			return AdminDayUsage{}, invalidGeneration("agents")
+		}
+		usage.Agents = append(usage.Agents, row)
+		if err := addInt(&usage.Attempts, row.Attempts); err != nil {
+			return AdminDayUsage{}, err
+		}
+		if err := addInt64(&usage.KnownTokens, row.KnownTokens); err != nil {
+			return AdminDayUsage{}, err
+		}
+		if err := addInt64(&usage.ChargedTokens, row.ChargedTokens); err != nil {
+			return AdminDayUsage{}, err
+		}
+	}
+	return usage, databaseError(ctx, rows.Err())
+}
+
+func addInt64(target *int64, value int64) error {
+	if value > 0 && *target > math.MaxInt64-value {
+		return invalidGeneration("usage")
+	}
+	if value < 0 && *target < math.MinInt64-value {
+		return invalidGeneration("usage")
+	}
+	*target += value
+	return nil
+}
+
+func addInt(target *int, value int) error {
+	if value > 0 && *target > math.MaxInt-value {
+		return invalidGeneration("usage")
+	}
+	if value < 0 && *target < math.MinInt-value {
+		return invalidGeneration("usage")
+	}
+	*target += value
+	return nil
 }
 
 // AdminStatus reports bounded queue, failure and usage signals through one
@@ -307,14 +393,17 @@ type AdminQueueStatus struct {
 	OldestFailed *time.Time `json:"oldest_failed,omitempty"`
 }
 
-// GenerateStatus aggregates the bounded report; failures and retries simply
-// count, never re-open work or claim provider billing.
+// GenerationStatus aggregates the bounded report in a single read snapshot.
+// Configured/enabled counts reuse the same validation rules as
+// CheckGenerationConfiguration. The UTC day is taken from the database so the
+// usage report describes the same moment as the queue counts. Failures and
+// retries simply count, never re-open work or claim provider billing.
 func (s *Store) GenerationStatus(ctx context.Context) (AdminStatus, error) {
 	var status AdminStatus
 	err := s.readSnapshot(ctx, func(q *Queries) error {
 		qctx, cancel := q.queryContext(ctx)
 		defer cancel()
-		configured, enabled, err := s.CheckGenerationConfiguration(ctx)
+		configured, enabled, err := countGenerationConfiguration(ctx, q)
 		if err != nil {
 			return err
 		}
@@ -332,29 +421,36 @@ func (s *Store) GenerationStatus(ctx context.Context) (AdminStatus, error) {
 		status.Queue = AdminQueueStatus{Pending: counts.pending, RetryWait: counts.retry,
 			Running: counts.running, Succeeded: counts.succeeded, Skipped: counts.skipped,
 			Cancelled: counts.cancelled, Failed: counts.failed}
-		var oldestDue, oldestFailed any
-		if err := q.queryer.QueryRowContext(qctx, `SELECT (SELECT min(created_at) FROM generation_jobs
-				WHERE status IN ('pending','retry_wait')),
-				(SELECT min(created_at) FROM generation_jobs WHERE status='failed')`).Scan(&oldestDue, &oldestFailed); err != nil {
+		var oldestDue, oldestFailed sql.NullTime
+		if err := q.queryer.QueryRowContext(qctx, `SELECT
+			(SELECT min(available_at) FROM generation_jobs
+			 WHERE status IN ('pending','retry_wait') AND available_at <= now() AND expires_at > now()),
+			(SELECT min(created_at) FROM generation_jobs WHERE status='failed')`).Scan(&oldestDue, &oldestFailed); err != nil {
 			return databaseError(ctx, err)
 		}
-		for value, target := range map[any]**time.Time{oldestDue: &status.Queue.OldestDue, oldestFailed: &status.Queue.OldestFailed} {
-			if stamp, ok := value.(time.Time); ok {
-				*target = &stamp
-			}
+		if oldestDue.Valid {
+			stamp := oldestDue.Time
+			status.Queue.OldestDue = &stamp
 		}
+		if oldestFailed.Valid {
+			stamp := oldestFailed.Time
+			status.Queue.OldestFailed = &stamp
+		}
+		var today time.Time
+		if err := q.queryer.QueryRowContext(qctx, `SELECT current_date`).Scan(&today); err != nil {
+			return databaseError(ctx, err)
+		}
+		usage, err := dayGenerationUsage(ctx, q, today.UTC().Format(time.DateOnly), "")
+		if err != nil {
+			return err
+		}
+		status.TodayUsage = AdminDayUsage{Day: usage.Day, Attempts: usage.Attempts,
+			KnownTokens: usage.KnownTokens, ChargedTokens: usage.ChargedTokens}
 		return nil
 	})
 	if err != nil {
 		return AdminStatus{}, err
 	}
-	// The whole fleet reads today's usage in one bounded, id-free row.
-	today, err := s.DayGenerationUsage(ctx, "", "")
-	if err != nil {
-		return AdminStatus{}, err
-	}
-	status.TodayUsage = AdminDayUsage{Day: today.Day, Attempts: today.Attempts,
-		KnownTokens: today.KnownTokens, ChargedTokens: today.ChargedTokens}
 	return status, nil
 }
 

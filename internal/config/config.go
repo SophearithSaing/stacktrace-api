@@ -18,6 +18,7 @@ const (
 	Server        Role = "server"
 	Database      Role = "database"
 	WorkerExecute Role = "worker_execute"
+	WorkerServe   Role = "worker_serve"
 )
 
 type Config struct {
@@ -39,7 +40,7 @@ func Load(role Role) (Config, error) {
 }
 
 func load(role Role, getenv func(string) string) (Config, error) {
-	if role != Server && role != Database && role != WorkerExecute {
+	if role != Server && role != Database && role != WorkerExecute && role != WorkerServe {
 		return Config{}, errors.New("unsupported configuration role")
 	}
 	cfg := Config{
@@ -64,6 +65,22 @@ func load(role Role, getenv func(string) string) (Config, error) {
 		cfg.TogetherAPIKey = getenv("TOGETHER_API_KEY")
 		if cfg.TogetherAPIKey == "" {
 			return Config{}, errors.New("TOGETHER_API_KEY is required for worker execute")
+		}
+		return cfg, nil
+	}
+	if role == WorkerServe {
+		cfg.TogetherAPIKey = getenv("TOGETHER_API_KEY")
+		if cfg.TogetherAPIKey == "" {
+			return Config{}, errors.New("TOGETHER_API_KEY is required for worker serve")
+		}
+		cfg.HTTPAddr = getenv("WORKER_HTTP_ADDR")
+		if cfg.HTTPAddr == "" {
+			cfg.HTTPAddr = "127.0.0.1:8081"
+		}
+		_, port, err := net.SplitHostPort(cfg.HTTPAddr)
+		portNumber, portErr := strconv.Atoi(port)
+		if err != nil || portErr != nil || portNumber < 1 || portNumber > 65535 {
+			return Config{}, errors.New("WORKER_HTTP_ADDR must be a host:port address with a port from 1 to 65535")
 		}
 		return cfg, nil
 	}

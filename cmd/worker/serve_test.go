@@ -549,6 +549,64 @@ func TestServeStopsWhenLogOutputFails(t *testing.T) {
 	}
 }
 
+// TestServeReportingFailureStopsBeforeProviderCall proves an eligible job is not
+// spent on when the reporter fails: zero provider calls and no reserved attempt.
+func TestServeReportingFailureStopsBeforeProviderCall(t *testing.T) {
+	store, _ := workerTestStore(t)
+	agentID := makeAgentAndPolicy(t, store)
+	job := makeHumanPostJob(t, store, agentID)
+
+	state := &serveState{}
+	output := &lockedWriter{w: failingWriter{err: errors.New("output unavailable")}}
+	logger := slog.New(slog.NewJSONHandler(output, nil))
+	provider := &fakeProvider{}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	err := serveCycles(ctx, store, provider, logger, state, output)
+	if !errors.Is(err, worker.ExecutionStorage) {
+		t.Fatalf("expected storage stop for broken output, got %v", err)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("provider called %d times before reporting failed", provider.calls)
+	}
+	if state.storageHealthyFlag() {
+		t.Fatal("reporter failure left service ready")
+	}
+
+	attemptCtx, cancelAttempt := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelAttempt()
+	attempt, attemptErr := store.LatestGenerationAttempt(attemptCtx, job.ID)
+	if attemptErr != nil {
+		t.Fatal(attemptErr)
+	}
+	if attempt != nil {
+		t.Fatalf("attempt reserved before reporting failed: %+v", attempt)
+	}
+}
+
+// TestServeCycleStatusFailureReturnsBackoff proves a failed status read is
+// returned (so the caller applies storage backoff) and leaves the service unready.
+func TestServeCycleStatusFailureReturnsBackoff(t *testing.T) {
+	base, _ := workerTestStore(t)
+	store := statusFailStore{Store: base}
+	state := &serveState{}
+	var output bytes.Buffer
+	writer := &lockedWriter{w: &output}
+	logger := slog.New(slog.NewJSONHandler(writer, nil))
+
+	err := runServeCycle(context.Background(), store, &fakeProvider{}, logger, state, writer)
+	if err == nil {
+		t.Fatal("status snapshot failure did not propagate")
+	}
+	if state.storageHealthyFlag() {
+		t.Fatal("status snapshot failure left service storage-healthy")
+	}
+	if state.Ready(context.Background(), store) {
+		t.Fatal("ready after status snapshot failure")
+	}
+}
+
 // TestServeRuntimeListenerFailure closes an already-serving listener to force a
 // deterministic runtime Serve failure and proves the service joins safely with a
 // fixed error.
@@ -662,6 +720,16 @@ func waitGroup(t *testing.T, wg *sync.WaitGroup, message string) {
 type failingWriter struct{ err error }
 
 func (f failingWriter) Write([]byte) (int, error) { return 0, f.err }
+
+// statusFailStore wraps a real store and fails only the bounded status read, so
+// the cycle probes the status-failure branch without touching other behavior.
+type statusFailStore struct {
+	*postgres.Store
+}
+
+func (statusFailStore) GenerationStatus(context.Context) (postgres.AdminStatus, error) {
+	return postgres.AdminStatus{}, errors.New("status snapshot unavailable")
+}
 
 type fakeProvider struct {
 	calls          int

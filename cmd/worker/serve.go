@@ -57,6 +57,16 @@ func (lw *lockedWriter) failed() bool {
 	return lw.err != nil
 }
 
+// serveStore is the minimal store boundary the service needs: the executor
+// contract plus the one scheduling call and the bounded status read. The real
+// *postgres.Store satisfies it; tests inject narrow fakes without a production
+// selector or new reporting framework.
+type serveStore interface {
+	worker.ExecutionStore
+	ScheduleGeneration(context.Context) (postgres.GenerationScheduleResult, error)
+	GenerationStatus(context.Context) (postgres.AdminStatus, error)
+}
+
 // serveState tracks readiness for the infrastructure probe. It is safe for
 // concurrent access from the HTTP handler and the cycle goroutine.
 type serveState struct {
@@ -134,7 +144,7 @@ func (s *serveState) readyLocked(now time.Time) bool {
 	return now.Sub(s.lastCompletedCycle) <= serveProgressStaleness
 }
 
-func (s *serveState) Ready(ctx context.Context, store *postgres.Store) bool {
+func (s *serveState) Ready(ctx context.Context, store serveStore) bool {
 	s.mu.RLock()
 	if !s.readyLocked(time.Now()) {
 		s.mu.RUnlock()
@@ -158,7 +168,7 @@ func (s *serveState) Ready(ctx context.Context, store *postgres.Store) bool {
 // serve binds the infrastructure listener synchronously and runs the bounded
 // cycle loop. Binding before any work makes a bad address a safe, deterministic
 // failure instead of spending after an unusable listener.
-func serve(ctx context.Context, store *postgres.Store, provider app.GenerationProvider, addr string, output io.Writer) error {
+func serve(ctx context.Context, store serveStore, provider app.GenerationProvider, addr string, output io.Writer) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		logger := slog.New(slog.NewJSONHandler(&lockedWriter{w: output}, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -171,7 +181,7 @@ func serve(ctx context.Context, store *postgres.Store, provider app.GenerationPr
 // serveListener runs the bounded cycle loop and infrastructure HTTP server for
 // an already-bound listener. It returns only after both the cycle loop and the
 // HTTP server have been cancelled and joined, so the caller may close the store.
-func serveListener(ctx context.Context, store *postgres.Store, provider app.GenerationProvider, ln net.Listener, output io.Writer) error {
+func serveListener(ctx context.Context, store serveStore, provider app.GenerationProvider, ln net.Listener, output io.Writer) error {
 	outputWriter := &lockedWriter{w: output}
 	logger := slog.New(slog.NewJSONHandler(outputWriter, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	state := &serveState{}
@@ -257,16 +267,19 @@ func serveListener(ctx context.Context, store *postgres.Store, provider app.Gene
 	return nil
 }
 
-func serveCycles(ctx context.Context, store *postgres.Store, provider app.GenerationProvider, logger *slog.Logger, state *serveState, output *lockedWriter) error {
+func serveCycles(ctx context.Context, store serveStore, provider app.GenerationProvider, logger *slog.Logger, state *serveState, output *lockedWriter) error {
 	for {
 		if err := ctx.Err(); err != nil {
 			return worker.ExecutionStopped
 		}
+		// Never start a new pass with a reporter that already failed.
+		if output.failed() {
+			return reporterFailure(logger, state)
+		}
 
 		cycleErr := runServeCycle(ctx, store, provider, logger, state, output)
 		if output.failed() {
-			logger.Error("serve log output failed, stopping", slog.String("error_code", codeLogOutput))
-			return worker.ExecutionStorage
+			return reporterFailure(logger, state)
 		}
 		if cycleErr == nil {
 			select {
@@ -287,6 +300,10 @@ func serveCycles(ctx context.Context, store *postgres.Store, provider app.Genera
 		}
 
 		logCycleError(logger, cycleErr)
+		// Do not back off and cycle again if that failure line could not be written.
+		if output.failed() {
+			return reporterFailure(logger, state)
+		}
 		state.markStorageUnhealthy()
 		select {
 		case <-time.After(serveFailureBackoff):
@@ -297,7 +314,15 @@ func serveCycles(ctx context.Context, store *postgres.Store, provider app.Genera
 	}
 }
 
-func runServeCycle(ctx context.Context, store *postgres.Store, provider app.GenerationProvider, logger *slog.Logger, state *serveState, output *lockedWriter) error {
+// reporterFailure marks the service unready and returns the fixed safe code for
+// an unusable log reporter, so no further work is scheduled or spent.
+func reporterFailure(logger *slog.Logger, state *serveState) error {
+	logger.Error("serve log output failed, stopping", slog.String("error_code", codeLogOutput))
+	state.markStorageUnhealthy()
+	return worker.ExecutionStorage
+}
+
+func runServeCycle(ctx context.Context, store serveStore, provider app.GenerationProvider, logger *slog.Logger, state *serveState, output *lockedWriter) error {
 	start := time.Now()
 	scheduleCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
 	result, err := schedule(scheduleCtx, store)
@@ -311,6 +336,11 @@ func runServeCycle(ctx context.Context, store *postgres.Store, provider app.Gene
 		slog.Int("jobs_enqueued", result.JobsEnqueued),
 		slog.Int("slots_denied", result.SlotsDenied),
 		slog.Int("jobs_expired", result.JobsExpired))
+	// Fail before any provider call if the reporter cannot record this pass.
+	if output.failed() {
+		state.markStorageUnhealthy()
+		return worker.ExecutionStorage
+	}
 
 	execCtx, cancel := context.WithTimeout(ctx, worker.ExecutionTimeout)
 	summary, execErr := worker.Execute(execCtx, store, provider)
@@ -354,8 +384,11 @@ func runServeCycle(ctx context.Context, store *postgres.Store, provider app.Gene
 	}
 	if state.takeStatusLogSlot(time.Now()) {
 		if err := logGenerationStatus(ctx, store, logger); err != nil {
-			// A failed reporting read is a storage degradation, not a silent no-op.
+			// A failed reporting read is a storage degradation: leave the completed
+			// cycle unready and return the error so the caller applies the storage
+			// backoff rather than a normal inter-cycle wait.
 			state.markStorageUnhealthy()
+			return err
 		}
 	}
 	logger.Info("serve cycle complete",
@@ -365,7 +398,7 @@ func runServeCycle(ctx context.Context, store *postgres.Store, provider app.Gene
 
 // logGenerationStatus writes one bounded queue-age/usage snapshot. It returns a
 // non-nil error when the read fails so the caller can surface storage degradation.
-func logGenerationStatus(ctx context.Context, store *postgres.Store, logger *slog.Logger) error {
+func logGenerationStatus(ctx context.Context, store serveStore, logger *slog.Logger) error {
 	statusCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	status, err := store.GenerationStatus(statusCtx)

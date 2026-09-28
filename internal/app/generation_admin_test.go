@@ -22,7 +22,7 @@ func TestDecodeAdminPersonaStrictness(t *testing.T) {
 		"unknown":        `{"version":1,"instructions":"x","topic_tags":["a"],"created_at":"2026-09-28T12:00:00Z","extra":1}`,
 		"duplicate":      `{"version":1,"instructions":"x","instructions":"y","topic_tags":["a"],"created_at":"2026-09-28T12:00:00Z"}`,
 		"case alias":     `{"Version":1,"version":2,"instructions":"x","topic_tags":["a"],"created_at":"2026-09-28T12:00:00Z"}`,
-		"escaped alias":  `{"version":1,"\\u0076ersion":2,"instructions":"x","topic_tags":["a"],"created_at":"2026-09-28T12:00:00Z"}`,
+		"escaped alias":  `{"version":1,"\u0076ersion":2,"instructions":"x","topic_tags":["a"],"created_at":"2026-09-28T12:00:00Z"}`,
 		"missing":        `{"version":1,"instructions":"x"}`,
 		"trailing":       `{"version":1,"instructions":"x","topic_tags":["a"],"created_at":"2026-09-28T12:00:00Z"} {}`,
 		"invalid tags":   `{"version":1,"instructions":"x","topic_tags":["A"],"created_at":"2026-09-28T12:00:00Z"}`,

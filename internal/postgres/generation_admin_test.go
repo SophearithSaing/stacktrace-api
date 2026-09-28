@@ -415,12 +415,13 @@ func TestAdminStatusEqualOldestDueAndFailed(t *testing.T) {
 	now := time.Now().UTC()
 	dueID := app.NewID()
 	failedID := app.NewID()
+	stamp := now.Add(-10 * time.Minute)
 	generationSQL(t, store, `INSERT INTO generation_jobs(id,agent_id,persona_version,trigger_kind,trigger_key,output_kind,root_job_id,chain_depth,max_chain_depth,max_chain_jobs,status,available_at,expires_at,lease_version,created_at)
-		VALUES($1,$2,1,'scheduled',$3,'post',$1,0,2,5,'pending',$4,$5,0,$6)`,
-		dueID, agentID, string(app.NewID()), now.Add(-time.Minute), now.Add(time.Hour), now)
+		VALUES($1,$2,1,'scheduled',$3,'post',$1,0,2,5,'pending',$4,$5,0,$4)`,
+		dueID, agentID, string(app.NewID()), stamp, now.Add(time.Hour))
 	generationSQL(t, store, `INSERT INTO generation_jobs(id,agent_id,persona_version,trigger_kind,trigger_key,output_kind,root_job_id,chain_depth,max_chain_depth,max_chain_jobs,status,available_at,expires_at,lease_version,created_at,finished_at,reason_code)
-		VALUES($1,$2,1,'scheduled',$3,'post',$1,0,2,5,'failed',$4,$5,1,$6,$6,'provider_credentials')`,
-		failedID, agentID, string(app.NewID()), now.Add(-time.Minute), now.Add(time.Hour), now)
+		VALUES($1,$2,1,'scheduled',$3,'post',$1,0,2,5,'failed',$4,$5,1,$4,$4,'provider_credentials')`,
+		failedID, agentID, string(app.NewID()), stamp, now.Add(time.Hour))
 	status, err := store.GenerationStatus(ctx)
 	if err != nil {
 		t.Fatal(err)

@@ -139,6 +139,20 @@ func durableStop(attempt *app.GenerationAttempt) error {
 	return nil
 }
 
+// durableStopAccounting is the acknowledged-attempt stop: only unsupported
+// accounting retains its execution stop because no repair acknowledgement
+// exists in this scope, while credentials/configuration repair acks are
+// handled by RetryGeneration and the worker.
+func durableStopAccounting(attempt *app.GenerationAttempt) error {
+	if attempt == nil || attempt.Status == app.AttemptReserved || attempt.Status == app.AttemptSucceeded {
+		return nil
+	}
+	if app.GenerationFailure(attempt.ErrorCode) == app.GenerationAccountingUnsupported {
+		return ExecutionAccounting
+	}
+	return nil
+}
+
 func (r *execution) job(ctx context.Context, job app.GenerationJob) error {
 	prior, err := r.store.LatestGenerationAttempt(ctx, job.ID)
 	if err != nil {
@@ -165,11 +179,16 @@ func (r *execution) job(ctx context.Context, job app.GenerationJob) error {
 			}
 			return nil
 		}
-		// An acknowledged fatal attempt can only exist after a trusted operator
-		// retry re-opened the failed job; unavailable claims cannot move a failed
-		// job's availability. The operator ack is the repaired environment, so
-		// these workers may call again with a fresh reservation. An ordinary
-		// restart of unacknowledged fatal attempts keeps stopping above.
+		// An acknowledged provider credentials/configuration attempt can only
+		// exist after a trusted operator retry re-opened the failed job;
+		// unavailable claims cannot move a failed job's availability. The
+		// operator ack is the repaired environment, so this worker may call
+		// again with a fresh reservation. Ordinary restarts stay stopped for
+		// unacknowledged fatal outcomes, and unsupported accounting never has a
+		// repair acknowledgement in this scope.
+		if stop := durableStopAccounting(prior); stop != nil {
+			return stop
+		}
 	}
 	input, err := r.store.GenerationContext(ctx, job.ID, job.LeaseVersion)
 	if err != nil {

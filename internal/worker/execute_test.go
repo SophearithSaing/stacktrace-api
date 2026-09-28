@@ -240,14 +240,19 @@ func TestExecuteDurableStopsAndHistory(t *testing.T) {
 				if err == nil || err.Error() != string(failure) || result.Probes != 1 || result.Published != 0 {
 					t.Fatal(result, err)
 				}
-				// "history" acknowledges nothing: an unacknowledged fatal prior
-				// attempt stops before any call. "acknowledged" proves a fresh
-				// call was made after the operator retry before the fresh fatal
-				// outcome stopped the pass.
+				// "history" and every unacknowledged fatal outcome (including
+				// unsupported accounting) stop before any call. "acknowledged"
+				// proves the operator-retry exception: credentials and
+				// configuration failures call again after the operator retry,
+				// while unsupported accounting never has a repair ack and keeps
+				// its stop.
 				if mode == "history" && result.Calls != 0 {
 					t.Fatal("historical call")
 				}
-				if mode == "acknowledged" && result.Calls != 1 {
+				if mode == "acknowledged" && failure == app.GenerationAccountingUnsupported && result.Calls != 0 {
+					t.Fatalf("accounting ack stopped: %+v", result)
+				}
+				if mode == "acknowledged" && failure != app.GenerationAccountingUnsupported && result.Calls != 1 {
 					t.Fatalf("operator retry did not call: %+v", result)
 				}
 			})

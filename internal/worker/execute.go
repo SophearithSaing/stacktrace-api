@@ -50,8 +50,8 @@ type ExecutionStore interface {
 }
 
 type ExecutionSummary struct {
-	Probes, Claimed, Calls, Recovered, Expired             int
-	Published, Skipped, Cancelled, Failed, Retried, Denied int
+	Probes, Claimed, Calls, CallsSucceeded, Recovered, Expired int
+	Published, Skipped, Cancelled, Failed, Retried, Denied     int
 }
 
 // Execute performs one bounded pass, never sleeps through backoff, and makes at
@@ -272,7 +272,11 @@ func (r *execution) call(ctx context.Context, request app.GenerationRequest) (ap
 		outcome = app.GenerationOutcome{Failure: app.GenerationTimeout}
 	}
 	stopRenew()
-	return outcome, <-done
+	leaseErr := <-done
+	if outcome.Failure == "" && leaseErr == nil {
+		r.summary.CallsSucceeded++
+	}
+	return outcome, leaseErr
 }
 
 // Cancellation settlement has one separate total cleanup budget. An uncertain

@@ -239,8 +239,10 @@ func TestAdminCLIIntegration(t *testing.T) {
 	}
 
 	// Create a failed social job eligible for explicit retry using direct SQL fixtures.
+	// Use a recent past creation/finish and a future expiry so the retry re-check
+	// passes without weakening eligibility.
 	jobID := app.NewID()
-	jobAt := now.Add(2 * time.Hour)
+	jobAt := now.Add(-10 * time.Minute)
 	day := jobAt.Format(time.DateOnly)
 	actorID := app.NewID()
 	if err := store.CreateAccount(ctx, app.Account{ID: actorID, Type: app.AccountHuman, Handle: "admin_human_actor", DisplayName: "Actor", CreatedAt: now, UpdatedAt: now}); err != nil {
@@ -254,7 +256,7 @@ func TestAdminCLIIntegration(t *testing.T) {
 	cooldownKey, _ := app.GenerationCooldownKey(actorID, agentID, sourcePostID, app.TriggerHumanPost)
 	if _, err := db.ExecContext(ctx, `INSERT INTO generation_jobs(id,agent_id,persona_version,trigger_kind,trigger_key,trigger_actor_id,cooldown_key,source_post_id,output_kind,root_job_id,chain_depth,max_chain_depth,max_chain_jobs,status,available_at,expires_at,lease_version,created_at,finished_at,reason_code)
 		VALUES($1,$2,1,'human_post',$3,$4,$5,$6,'reply',$1,0,2,5,'failed',$7,$8,1,$7,$7,'provider_credentials')`,
-		jobID, agentID, triggerKey, actorID, cooldownKey, sourcePostID, jobAt, jobAt.Add(time.Hour)); err != nil {
+		jobID, agentID, triggerKey, actorID, cooldownKey, sourcePostID, jobAt, now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO generation_attempts(id,job_id,attempt_number,lease_version,provider,model,

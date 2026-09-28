@@ -197,11 +197,9 @@ func TestGenerationControlsPauseFenceViaControls(t *testing.T) {
 			if publicationCounts(t, store) != before || storedSpend(t, store, attempt.ID).AccountedTokens() != attempt.ReservedTokens {
 				t.Fatal("denial changed usage accounting")
 			}
-			// A fresh admission after resume carries the new revision. The old
-			// fence applies only to stale reservations, not to all future work;
-			// an attempt with the current revision satisfies the exact publication
-			// match (publication success itself is exercised by the existing
-			// publication suite, which publishes revision-matched attempts).
+			// A fresh admission after resume carries the new revision, and that
+			// genuinely eligible work must publish: the fence is exact-match
+			// authority, not a lifetime lockout after pause/resume.
 			clock := time.Now().UTC()
 			freshJob := contextJob(t, store, job, map[string]any{"created_at": clock.Add(-4000 * time.Second), "available_at": clock.Add(-4000 * time.Second), "lease_expires_at": clock.Add(time.Hour)})
 			freshInput, _ := readGenerationContext(t, store, freshJob)
@@ -215,6 +213,13 @@ func TestGenerationControlsPauseFenceViaControls(t *testing.T) {
 			}
 			if ok, err := store.SettleGeneration(ctx, fresh, app.GenerationOutcome{Result: freshOutput}, ""); err != nil || !ok {
 				t.Fatalf("fresh settlement: %v %v", ok, err)
+			}
+			published, pubErr := store.PublishGeneration(ctx, freshJob.ID, freshJob.LeaseVersion, fresh.ID, freshOutput)
+			if pubErr != nil {
+				t.Fatalf("new revision denied: %v", pubErr)
+			}
+			if published.Status != app.JobSucceeded || published.PublishedAttemptID == nil || *published.PublishedAttemptID != fresh.ID || published.ResultReplyID == nil {
+				t.Fatalf("fresh publication: %+v", published)
 			}
 		})
 	}

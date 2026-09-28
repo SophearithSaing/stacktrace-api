@@ -165,9 +165,11 @@ func (r *execution) job(ctx context.Context, job app.GenerationJob) error {
 			}
 			return nil
 		}
-		if stop := durableStop(prior); stop != nil {
-			return stop
-		}
+		// An acknowledged fatal attempt can only exist after a trusted operator
+		// retry re-opened the failed job; unavailable claims cannot move a failed
+		// job's availability. The operator ack is the repaired environment, so
+		// these workers may call again with a fresh reservation. An ordinary
+		// restart of unacknowledged fatal attempts keeps stopping above.
 	}
 	input, err := r.store.GenerationContext(ctx, job.ID, job.LeaseVersion)
 	if err != nil {

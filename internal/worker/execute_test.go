@@ -240,8 +240,15 @@ func TestExecuteDurableStopsAndHistory(t *testing.T) {
 				if err == nil || err.Error() != string(failure) || result.Probes != 1 || result.Published != 0 {
 					t.Fatal(result, err)
 				}
-				if (mode == "history" || mode == "acknowledged") && result.Calls != 0 {
+				// "history" acknowledges nothing: an unacknowledged fatal prior
+				// attempt stops before any call. "acknowledged" proves a fresh
+				// call was made after the operator retry before the fresh fatal
+				// outcome stopped the pass.
+				if mode == "history" && result.Calls != 0 {
 					t.Fatal("historical call")
+				}
+				if mode == "acknowledged" && result.Calls != 1 {
+					t.Fatalf("operator retry did not call: %+v", result)
 				}
 			})
 		}
@@ -259,6 +266,41 @@ func TestExecuteDurableStopsAndHistory(t *testing.T) {
 		if status == app.AttemptSucceeded && s.denied != 1 {
 			t.Fatal("lost payload not denied")
 		}
+	}
+}
+
+// TestExecuteOperatorRetryAcknowledgement reproduces the exact persisted retry
+// state of a failed credentials job after a trusted operator retry: the job was
+// claimed with a fresh lease availability (acknowledged via availability-after-
+// finish) with the fatal attempt still retained in history. The pass calls
+// again with a fresh reservation; repaired providers succeed and publish.
+func TestExecuteOperatorRetryAcknowledgement(t *testing.T) {
+	s := executeFixture(t)
+	finish := s.job.AvailableAt.Add(time.Second)
+	s.attempt = &app.GenerationAttempt{ID: app.NewID(), LeaseVersion: 1, Status: app.AttemptFailed,
+		ErrorCode: string(app.GenerationCredentials), FinishedAt: &finish}
+	s.job.LeaseVersion = 2
+	s.job.AvailableAt = finish.Add(time.Second)
+	want, err := app.DecodeGenerationResult([]byte(`{"decision":"publish","body":"A repaired credentials retry result."}`), s.job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := Execute(context.Background(), s, providerFunc(func(_ context.Context, req app.GenerationRequest) app.GenerationOutcome {
+		if s.attempt.Status != app.AttemptReserved {
+			t.Fatal("call before reservation")
+		}
+		s.event("call")
+		return app.GenerationOutcome{Result: want, ProviderRequestID: "retry-request.1"}
+	}))
+	if err != nil || result.Calls != 1 || result.Published != 1 || result.Retried != 0 {
+		t.Fatalf("operator retry pass: %+v %v", result, err)
+	}
+	if s.requestID != "retry-request.1" {
+		t.Fatalf("request id: %q", s.requestID)
+	}
+	wantEvents := []string{"ready", "recover", "expire", "claim", "latest", "context", "reserve", "call", "settle", "latest", "complete", "publish"}
+	if !reflect.DeepEqual(s.events, wantEvents) {
+		t.Fatalf("retry events: %v", s.events)
 	}
 }
 

@@ -3,8 +3,9 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
+	"log/slog"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -18,19 +19,37 @@ import (
 const (
 	serveCycleInterval       = 5 * time.Second
 	serveFailureBackoff      = 30 * time.Second
-	serveProgressStaleness   = worker.ExecutionTimeout + 30*time.Second + serveCycleInterval
+	serveCleanupTimeout      = 5 * time.Second
+	serveProgressStaleness   = worker.ExecutionTimeout + 35*time.Second + serveCycleInterval + serveCleanupTimeout + 5*time.Second
+	serveHTTPShutdownTimeout = 10 * time.Second
+	serveCycleJoinTimeout    = worker.ExecutionTimeout + serveCleanupTimeout + 10*time.Second
+	serveStatusLogInterval   = time.Minute
 	serveReadyDBTimeout      = 5 * time.Second
-	serveShutdownHTTPTimeout = 10 * time.Second
 )
+
+// lockedWriter serializes writes so the cycle goroutine and lifecycle goroutine
+// do not race on the shared output stream.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (lw *lockedWriter) Write(p []byte) (int, error) {
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+	return lw.w.Write(p)
+}
 
 // serveState tracks readiness for the infrastructure probe. It is safe for
 // concurrent access from the HTTP handler and the cycle goroutine.
 type serveState struct {
-	mu               sync.RWMutex
-	ready            bool
-	shuttingDown     bool
-	lastHealthyCycle time.Time
-	providerHealthy  bool
+	mu                 sync.RWMutex
+	ready              bool
+	shuttingDown       bool
+	storageHealthy     bool
+	providerDegraded   bool
+	lastCompletedCycle time.Time
+	lastStatusLog      time.Time
 }
 
 func (s *serveState) setShuttingDown() {
@@ -40,32 +59,53 @@ func (s *serveState) setShuttingDown() {
 	s.ready = false
 }
 
-func (s *serveState) recordHealthyCycle(now time.Time, providerSuccess bool) {
+func (s *serveState) markStorageUnhealthy() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.lastHealthyCycle = now
-	s.ready = true
-	if providerSuccess {
-		s.providerHealthy = true
+	s.storageHealthy = false
+	s.ready = false
+}
+
+func (s *serveState) recordCompletedCycle(now time.Time, summary worker.ExecutionSummary) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastCompletedCycle = now
+	s.storageHealthy = true
+	if !s.shuttingDown {
+		s.ready = true
+	}
+	if summary.Calls > 0 {
+		s.providerDegraded = summary.CallsSucceeded != summary.Calls
 	}
 }
 
-func (s *serveState) setProviderDegraded() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.providerHealthy = false
+func (s *serveState) providerDegradedFlag() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.providerDegraded
 }
 
-func (s *serveState) readyLocked() bool {
-	if s.shuttingDown || !s.ready || s.lastHealthyCycle.IsZero() {
+func (s *serveState) takeStatusLogSlot(now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if now.Sub(s.lastStatusLog) < serveStatusLogInterval {
 		return false
 	}
-	return time.Since(s.lastHealthyCycle) <= serveProgressStaleness
+	s.lastStatusLog = now
+	return true
+}
+
+func (s *serveState) readyLocked(now time.Time) bool {
+	if s.shuttingDown || !s.storageHealthy || s.lastCompletedCycle.IsZero() {
+		return false
+	}
+	return now.Sub(s.lastCompletedCycle) <= serveProgressStaleness
 }
 
 func (s *serveState) Ready(ctx context.Context, store *postgres.Store) bool {
 	s.mu.RLock()
-	if !s.readyLocked() {
+	now := time.Now()
+	if !s.readyLocked(now) {
 		s.mu.RUnlock()
 		return false
 	}
@@ -76,14 +116,21 @@ func (s *serveState) Ready(ctx context.Context, store *postgres.Store) bool {
 	if err := store.Ready(dbCtx); err != nil {
 		return false
 	}
-	return true
+
+	// Recheck local state after the DB probe to avoid reporting ready after a
+	// concurrent shutdown or error.
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.readyLocked(time.Now())
 }
 
 // serve runs bounded schedule/execute cycles with a separate infrastructure
-// listener. It returns only after shutdown has joined the cycle and HTTP server
-// and closed the store. Fatal provider errors stop the service; transient
-// storage errors use a bounded backoff and remain observable through readiness.
+// listener. It returns only after shutdown has joined the cycle and HTTP server.
+// Fatal provider errors stop the service; transient storage errors use a bounded
+// backoff and remain observable through readiness.
 func serve(ctx context.Context, store *postgres.Store, provider app.GenerationProvider, addr string, output io.Writer) error {
+	outputWriter := &lockedWriter{w: output}
+	logger := slog.New(slog.NewJSONHandler(outputWriter, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	state := &serveState{}
 
 	infra := &api.Infrastructure{
@@ -97,53 +144,64 @@ func serve(ctx context.Context, store *postgres.Store, provider app.GenerationPr
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
+	// Bind synchronously so the caller gets a deterministic, safe failure code.
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		logger.Error("serve bind failed", slog.String("error_code", "listener_failure"))
+		return worker.ExecutionConfiguration
+	}
+
 	serverErr := make(chan error, 1)
 	go func() {
-		err := server.ListenAndServe()
+		err := server.Serve(ln)
 		if err != nil && errors.Is(err, http.ErrServerClosed) {
 			err = nil
 		}
 		serverErr <- err
 	}()
 
-	cycleErr := make(chan error, 1)
 	cycleCtx, stopCycles := context.WithCancel(ctx)
+	cycleErr := make(chan error, 1)
 	go func() {
-		cycleErr <- serveCycles(cycleCtx, store, provider, output, state)
+		cycleErr <- serveCycles(cycleCtx, store, provider, logger, outputWriter, state)
 	}()
 
 	var cycleResult error
 	select {
 	case <-ctx.Done():
 	case err := <-serverErr:
-		fmt.Fprintf(output, "serve: infrastructure listener failed: %v\n", err)
+		if err != nil {
+			logger.Error("serve infrastructure listener failed", slog.String("error_code", "listener_failure"))
+		}
 		stopCycles()
 	case err := <-cycleErr:
-		fmt.Fprintf(output, "serve: cycle loop stopped: %v\n", err)
 		cycleResult = err
 		state.setShuttingDown()
+		logger.Error("serve cycle loop stopped", slog.String("error_code", safeErrorCode(err)))
 	}
 
 	state.setShuttingDown()
 	stopCycles()
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), serveShutdownHTTPTimeout)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), serveHTTPShutdownTimeout)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		fmt.Fprintf(output, "serve: http shutdown: %v\n", err)
+		logger.Error("serve http shutdown failed, forcing close", slog.String("error_code", "listener_shutdown"))
+		server.Close()
 	}
 
 	if cycleResult == nil {
 		select {
 		case cycleResult = <-cycleErr:
-		case <-time.After(serveShutdownHTTPTimeout):
-			fmt.Fprintln(output, "serve: cycle shutdown timed out")
+		case <-time.After(serveCycleJoinTimeout):
+			logger.Error("serve cycle shutdown timed out", slog.String("error_code", "cycle_join_timeout"))
 		}
 	}
 
 	serverResult := <-serverErr
 	if serverResult != nil {
-		return fmt.Errorf("serve: infrastructure listener: %w", serverResult)
+		logger.Error("serve infrastructure listener returned error", slog.String("error_code", "listener_failure"))
+		return worker.ExecutionConfiguration
 	}
 	if cycleResult != nil {
 		var safe worker.ExecutionError
@@ -155,14 +213,13 @@ func serve(ctx context.Context, store *postgres.Store, provider app.GenerationPr
 	return nil
 }
 
-func serveCycles(ctx context.Context, store *postgres.Store, provider app.GenerationProvider, output io.Writer, state *serveState) error {
+func serveCycles(ctx context.Context, store *postgres.Store, provider app.GenerationProvider, logger *slog.Logger, outputWriter io.Writer, state *serveState) error {
 	for {
 		if err := ctx.Err(); err != nil {
 			return worker.ExecutionStopped
 		}
 
-		start := time.Now()
-		cycleErr := runServeCycle(ctx, store, provider, output, state, start)
+		cycleErr := runServeCycle(ctx, store, provider, logger, outputWriter, state)
 		if cycleErr == nil {
 			select {
 			case <-time.After(serveCycleInterval):
@@ -176,13 +233,16 @@ func serveCycles(ctx context.Context, store *postgres.Store, provider app.Genera
 		if errors.As(cycleErr, &fatal) {
 			switch fatal {
 			case worker.ExecutionCredentials, worker.ExecutionConfiguration, worker.ExecutionAccounting:
-				fmt.Fprintf(output, "serve: fatal provider error %s; stopping\n", fatal)
+				logger.Error("serve fatal provider error, stopping",
+					slog.String("error_code", string(fatal)))
 				return fatal
 			}
 		}
 
-		fmt.Fprintf(output, "serve: transient cycle error %v; backing off %s\n", cycleErr, serveFailureBackoff)
-		state.setProviderDegraded()
+		logger.Error("serve transient cycle error, backing off",
+			slog.String("error_code", safeErrorCode(cycleErr)),
+			slog.Duration("backoff", serveFailureBackoff))
+		state.markStorageUnhealthy()
 		select {
 		case <-time.After(serveFailureBackoff):
 			continue
@@ -192,21 +252,21 @@ func serveCycles(ctx context.Context, store *postgres.Store, provider app.Genera
 	}
 }
 
-func runServeCycle(ctx context.Context, store *postgres.Store, provider app.GenerationProvider, output io.Writer, state *serveState, start time.Time) error {
+func runServeCycle(ctx context.Context, store *postgres.Store, provider app.GenerationProvider, logger *slog.Logger, outputWriter io.Writer, state *serveState) error {
+	start := time.Now()
 	scheduleCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
 	result, err := schedule(scheduleCtx, store)
 	cancel()
 	if err != nil {
 		return err
 	}
-	reportSchedule(output, result, nil)
+	reportSchedule(outputWriter, result, nil)
 
 	execCtx, cancel := context.WithTimeout(ctx, worker.ExecutionTimeout)
 	summary, execErr := worker.Execute(execCtx, store, provider)
 	cancel()
-	reportExecution(output, summary, execErr)
+	reportExecution(outputWriter, summary, execErr)
 
-	providerSuccess := summary.CallsSucceeded > 0
 	if execErr != nil {
 		var safe worker.ExecutionError
 		if errors.As(execErr, &safe) {
@@ -219,9 +279,56 @@ func runServeCycle(ctx context.Context, store *postgres.Store, provider app.Gene
 		}
 		return execErr
 	}
-	if summary.Calls > 0 && summary.CallsSucceeded == 0 {
-		state.setProviderDegraded()
+
+	state.recordCompletedCycle(time.Now(), summary)
+	if state.providerDegradedFlag() {
+		logger.Info("serve provider degradation persists",
+			slog.Bool("provider_degraded", true),
+			slog.String("recovery_rule", "success-only pass clears degradation"))
 	}
-	state.recordHealthyCycle(start, providerSuccess)
+	if state.takeStatusLogSlot(time.Now()) {
+		logGenerationStatus(ctx, store, logger)
+	}
+	logger.Info("serve cycle complete",
+		slog.Int("probes", summary.Probes),
+		slog.Int("claimed", summary.Claimed),
+		slog.Int("calls", summary.Calls),
+		slog.Int("calls_succeeded", summary.CallsSucceeded),
+		slog.Duration("duration", time.Since(start)))
 	return nil
+}
+
+func logGenerationStatus(ctx context.Context, store *postgres.Store, logger *slog.Logger) {
+	statusCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	status, err := store.GenerationStatus(statusCtx)
+	if err != nil {
+		logger.Error("serve status snapshot unavailable", slog.String("error_code", "status_snapshot"))
+		return
+	}
+	logger.Info("serve status snapshot",
+		slog.Int("configured", status.Agent.Configured),
+		slog.Int("enabled", status.Agent.Enabled),
+		slog.Int("pending", status.Queue.Pending),
+		slog.Int("retry_wait", status.Queue.RetryWait),
+		slog.Int("running", status.Queue.Running),
+		slog.Int("succeeded", status.Queue.Succeeded),
+		slog.Int("skipped", status.Queue.Skipped),
+		slog.Int("cancelled", status.Queue.Cancelled),
+		slog.Int("failed", status.Queue.Failed),
+		slog.String("day", status.TodayUsage.Day),
+		slog.Int("attempts", status.TodayUsage.Attempts),
+		slog.Int64("known_tokens", status.TodayUsage.KnownTokens),
+		slog.Int64("charged_tokens", status.TodayUsage.ChargedTokens))
+}
+
+func safeErrorCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	var safe worker.ExecutionError
+	if errors.As(err, &safe) {
+		return string(safe)
+	}
+	return "execution_storage"
 }

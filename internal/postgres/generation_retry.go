@@ -54,6 +54,13 @@ func (s *Store) RetryGeneration(ctx context.Context, id app.ID) (app.GenerationJ
 		default:
 			return app.ErrForbidden
 		}
+		// executionPolicyAllowed requires the root lock before the job/attempt
+		// lock while the same transaction keeps the root to the end.
+		if read.RootJobID != read.ID {
+			if _, err := q.lockExecutionJob(ctx, read.RootJobID); err != nil {
+				return err
+			}
+		}
 		job, err := q.lockExecutionJob(ctx, id)
 		if err != nil {
 			return err
@@ -98,7 +105,6 @@ func (s *Store) retriedGeneration(q *Queries, ctx context.Context, job app.Gener
 	if invalid > app.MaxGenerationInvalidRegenerations {
 		return app.ErrForbidden
 	}
-	failure := app.GenerationFailure(job.ReasonCode)
 	last := app.GenerationAttempt{Status: app.AttemptFailed}
 	if len(attempts) > 0 {
 		last = attempts[len(attempts)-1]
@@ -106,11 +112,24 @@ func (s *Store) retriedGeneration(q *Queries, ctx context.Context, job app.Gener
 	if last.Status == app.AttemptReserved { // Latest reservation never settles.
 		return app.ErrForbidden
 	}
-	if last.Status != app.AttemptSucceeded && !failure.Valid() {
-		return app.ErrForbidden // Unrecognized/invalid final reason.
+	if last.Status == app.AttemptSucceeded {
+		// Lost publish payload and legacy undecoded successes are retirable
+		// only through their explicit reason; skip decisions belong to skipped
+		// work, never to a failed row.
+		if job.ReasonCode != "outcome_unavailable" || last.Decision == app.GenerationSkip {
+			return app.ErrForbidden
+		}
+	} else {
+		// A failed row re-opens only for provider credentials/configuration
+		// repair acks or the retryable population. Final unsafe/repeated
+		// observations, execution cancellation and unrecognized reason codes
+		// never re-open, even with successful history.
+		failure := app.GenerationFailure(job.ReasonCode)
+		if !failure.Valid() || failure == app.GenerationUnsafeOutput ||
+			failure == app.GenerationRepeatedOutput || failure == app.GenerationCancelled {
+			return app.ErrForbidden
+		}
 	}
-	// Unsafe/repeated and every other non-failed terminal state are excluded by
-	// the status gate above, and unknown legacy successes stay retirable.
 	now, err := q.generationClock(ctx, nil) // Fresh locked time after every lock.
 	if err != nil {
 		return err

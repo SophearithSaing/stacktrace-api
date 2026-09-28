@@ -102,6 +102,29 @@ func TestGenerationRetryDenials(t *testing.T) {
 			t.Fatalf("unrecognized retry: %+v %v", got, err)
 		}
 	})
+	t.Run("final_observation_reasons", func(t *testing.T) {
+		for _, reason := range []string{string(app.GenerationUnsafeOutput), string(app.GenerationRepeatedOutput), string(app.GenerationCancelled)} {
+			store, failed, _ := retryFixture(t, app.GenerationCredentials)
+			generationSQL(t, store, `UPDATE generation_jobs SET reason_code=$2 WHERE id=$1`, failed.ID, reason)
+			if got, err := store.RetryGeneration(context.Background(), failed.ID); !errors.Is(err, app.ErrForbidden) {
+				t.Fatalf("%s retained: %+v %v", reason, got, err)
+			}
+		}
+	})
+	t.Run("skip_attempt_in_failed_row", func(t *testing.T) {
+		store, failed, _ := retryFixture(t, app.GenerationCredentials)
+		// A successful skip attempt must not ride the success bypass: its
+		// outcome belongs to skipped work.
+		generationSQL(t, store, `INSERT INTO generation_attempts(id,job_id,attempt_number,lease_version,provider,model,
+			context_hash,context_builder_version,budget_day,reserved_tokens,status,started_at,finished_at,output_digest,decision,skip_reason)
+			SELECT $1,job_id,attempt_number+1,lease_version,provider,model,context_hash,context_builder_version,budget_day,reserved_tokens,'succeeded',started_at,finished_at,
+			'generation_output_v1:'||repeat('a',64),'skip','not_relevant'
+			FROM generation_attempts WHERE job_id=$2 ORDER BY attempt_number DESC LIMIT 1`, app.NewID(), failed.ID)
+		generationSQL(t, store, `UPDATE generation_jobs SET reason_code='outcome_unavailable' WHERE id=$1`, failed.ID)
+		if got, err := store.RetryGeneration(context.Background(), failed.ID); !errors.Is(err, app.ErrForbidden) {
+			t.Fatalf("skip attempt in failed row: %+v %v", got, err)
+		}
+	})
 	t.Run("expired", func(t *testing.T) {
 		store, job, input := spendFixture(t, 500000)
 		now := time.Now().UTC()
@@ -410,13 +433,15 @@ func TestGenerationRetryInvalidRecovery(t *testing.T) {
 	}
 }
 
+// TestGenerationRetryRetainedHint keeps a valid in-window provider Retry-After
+// exactly: credentials failures are never auto-retried, so the job fails while
+// the attempt retains its hint; the operator retry then re-uses that hint as an
+// availability floor. The 45-minute hint is always inside the fixture's
+// ~59-minute expiry, so both instants are deterministic.
 func TestGenerationRetryRetainedHint(t *testing.T) {
 	store, job, input := spendFixture(t, 500000)
 	ctx := context.Background()
 	hint := time.Now().UTC().Add(45 * time.Minute).Truncate(time.Microsecond)
-	if !hint.Before(job.ExpiresAt) {
-		t.Skip("hint would cross expiry for this run")
-	}
 	attempt := admitSpend(t, store, job, input)
 	if ok, err := store.SettleGeneration(ctx, attempt, app.GenerationOutcome{Failure: app.GenerationCredentials, NotBefore: hint}, ""); err != nil || !ok {
 		t.Fatal(ok, err)
@@ -444,6 +469,33 @@ func TestGenerationRetryRetainedHint(t *testing.T) {
 	}
 }
 
+// TestGenerationRetryHintDenial restores the beyond-expiry case: a Retry-After
+// can delay but never extend past the immutable job expiry, and the retained
+// attempt hint stays untouched for the denial.
+func TestGenerationRetryHintDenial(t *testing.T) {
+	store, job, input := spendFixture(t, 500000)
+	ctx := context.Background()
+	hint := job.ExpiresAt.Add(time.Hour).Truncate(time.Microsecond)
+	attempt := admitSpend(t, store, job, input)
+	if ok, err := store.SettleGeneration(ctx, attempt, app.GenerationOutcome{Failure: app.GenerationCredentials, NotBefore: hint}, ""); err != nil || !ok {
+		t.Fatalf("settle: %v %v", ok, err)
+	}
+	if _, err := store.CompleteGeneration(ctx, job.ID, job.LeaseVersion, attempt.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+	failed := claimJob(t, store, job.ID)
+	if failed.Status != app.JobFailed || failed.ReasonCode != string(app.GenerationCredentials) {
+		t.Fatalf("hint fixture job: %+v", failed)
+	}
+	retained, err := store.LatestGenerationAttempt(ctx, job.ID)
+	if err != nil || retained == nil || retained.NotBefore == nil || !retained.NotBefore.Equal(app.GenerationInstant(hint)) {
+		t.Fatalf("denial lost the retained hint: %+v %v", retained, err)
+	}
+	if got, retryErr := store.RetryGeneration(ctx, failed.ID); !errors.Is(retryErr, app.ErrForbidden) {
+		t.Fatalf("hint beyond expiry: %+v %v", got, retryErr)
+	}
+}
+
 func TestGenerationRetryAvailabilityFloor(t *testing.T) {
 	store, job, input := spendFixture(t, 500000)
 	ctx := context.Background()
@@ -461,25 +513,6 @@ func TestGenerationRetryAvailabilityFloor(t *testing.T) {
 	}
 	if !retried.AvailableAt.After(app.GenerationInstant(*failed.FinishedAt)) {
 		t.Fatalf("availability did not strictly exceed the finished attempt: %+v vs %v", retried.AvailableAt, *failed.FinishedAt)
-	}
-}
-
-func funcer(err error) string {
-	switch {
-	case err == nil:
-		return "nil"
-	case errors.Is(err, app.ErrConflict):
-		return "conflict"
-	case errors.Is(err, app.ErrForbidden):
-		return "forbidden"
-	case errors.Is(err, app.ErrUnavailable):
-		return "unavailable"
-	case errors.Is(err, app.ErrDeleted):
-		return "deleted"
-	case errors.Is(err, app.ErrNotFound):
-		return "notfound"
-	default:
-		return err.Error()
 	}
 }
 
@@ -530,14 +563,12 @@ func TestGenerationRetryPauseRace(t *testing.T) {
 		err error
 	}
 	results := make(chan pauseOutcome, 2)
-	retried := make(chan app.GenerationJob, 2)
 	var group sync.WaitGroup
 	start := make(chan struct{})
 	group.Go(func() {
 		<-start
 		got, err := store.RetryGeneration(ctx, failed.ID)
 		results <- pauseOutcome{job: got, err: err}
-		retried <- got
 	})
 	group.Go(func() {
 		<-start
@@ -553,18 +584,86 @@ func TestGenerationRetryPauseRace(t *testing.T) {
 	// the retry was denied eligibility. No store error escapes.
 	rate := <-results
 	final := claimJob(t, store, failed.ID)
-	proceed := <-retried
 	switch {
 	case rate.err == nil:
-		if final.Status != app.JobRetryWait || proceed.Status != app.JobRetryWait {
+		if final.Status != app.JobRetryWait || rate.job.Status != app.JobRetryWait {
 			t.Fatalf("retry winner state: %+v", final)
 		}
 	case errors.Is(rate.err, app.ErrForbidden), errors.Is(rate.err, app.ErrConflict):
-		if final.Status != app.JobFailed || proceed.ID != "" {
-			t.Fatalf("pause winner state: %+v %+v", final, proceed)
+		if final.Status != app.JobFailed || rate.job.ID != "" {
+			t.Fatalf("pause winner state: %+v %+v", final, rate.job)
 		}
 	default:
 		t.Fatalf("retry error: %v", rate.err)
+	}
+}
+
+// TestGenerationRetryRootWaitOrder proves the retry acquires the root job
+// before the child job (the executionPolicyAllowed contract) and never holds
+// the child or attempt lock while the root lock waits.
+func TestGenerationRetryRootWaitOrder(t *testing.T) {
+	store, job, attempt, output := publicationFixture(t, app.OutputPost, "@retry_root_child a real continuation")
+	peer := socialAgent(t, store, "retry_root_child", func(p *app.GenerationPolicy) { p.DailyTokenBudget = 500000 })
+	ctx := context.Background()
+	published, err := store.PublishGeneration(ctx, job.ID, job.LeaseVersion, attempt.ID, output)
+	if err != nil || published.Status != app.JobSucceeded {
+		t.Fatalf("root publish: %+v %v", published, err)
+	}
+	var child app.GenerationJob
+	for _, candidate := range socialJobs(t, store) {
+		if candidate.RootJobID == job.ID && candidate.ID != job.ID {
+			child = candidate
+		}
+	}
+	if child.ID == "" || child.AgentID != peer.AgentID {
+		t.Fatalf("missing real continuation: %+v", child)
+	}
+	// Fail the child with a credentials outcome so it becomes retirable.
+	generationSQL(t, store, `UPDATE generation_jobs SET status='running',lease_version=1,
+		lease_expires_at=clock_timestamp()+interval '1 minute' WHERE id=$1`, child.ID)
+	child = claimJob(t, store, child.ID)
+	childInput, _ := readGenerationContext(t, store, child)
+	childAttempt := admitSpend(t, store, child, childInput)
+	if ok, err := store.SettleGeneration(ctx, childAttempt, app.GenerationOutcome{Failure: app.GenerationCredentials}, ""); err != nil || !ok {
+		t.Fatalf("settle: %v %v", ok, err)
+	}
+	if _, err := store.CompleteGeneration(ctx, child.ID, child.LeaseVersion, childAttempt.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+	failed := claimJob(t, store, child.ID)
+	if failed.Status != app.JobFailed {
+		t.Fatalf("child fixture: %+v", failed)
+	}
+	// The root row lock forces the retry transaction to wait exactly between
+	// its root and child acquisitions, mirroring admission's documented order.
+	blocker, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Rollback()
+	if _, err := blocker.ExecContext(ctx, `SELECT id FROM generation_jobs WHERE id=$1 FOR UPDATE`, job.ID); err != nil {
+		t.Fatal(err)
+	}
+	var pid int
+	if err := blocker.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	callCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := store.RetryGeneration(callCtx, failed.ID); done <- err }()
+	waitForDatabaseBlock(t, store, pid)
+	// The child job and its newest attempt are not locked while the root waits.
+	probeSQL := `SELECT id FROM generation_jobs WHERE id=$1 FOR UPDATE NOWAIT`
+	if _, probeErr := blocker.ExecContext(ctx, probeSQL, failed.ID); probeErr != nil {
+		t.Fatalf("child before root: %v", probeErr)
+	}
+	if _, probeErr := blocker.ExecContext(ctx, `SELECT id FROM generation_attempts WHERE id=$1 FOR UPDATE NOWAIT`, childAttempt.ID); probeErr != nil {
+		t.Fatalf("attempt before root: %v", probeErr)
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation: %v", err)
 	}
 }
 

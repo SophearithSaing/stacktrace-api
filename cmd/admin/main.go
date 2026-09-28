@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
+	"strconv"
 	"time"
 
 	"github.com/SophearithSaing/stacktrace-api/internal/app"
@@ -18,10 +18,6 @@ import (
 // adminCommandDeadline bounds the full command lifetime including the open
 // pool; informational reads run on one consistent snapshot each.
 const adminCommandDeadline = 30 * time.Second
-
-// maxAdminFileBytes bounds file payloads before they are decoded, so oversized
-// persona/policy files never reach the strict-JSON boundary.
-const maxAdminFileBytes = app.MaxAdminPersonaFileBytes
 
 const adminUsage = `usage: admin persona create AGENT FILE   (creates the immutable version and selects it for future jobs)
        admin persona select AGENT VERSION
@@ -89,238 +85,220 @@ func adminID(value string) (app.ID, error) {
 	return app.ID(value), nil
 }
 
-var adminCommands = map[string]string{
-	"persona create": "file", "persona select": "version", "policy set": "file",
-	"agent pause": "target", "agent resume": "target",
-	"job list": "list", "job inspect": "single", "job retry": "single",
-	"usage": "usage", "status": "empty",
-	"account disable": "single", "post remove": "single", "reply remove": "single",
-}
-
-func adminKind(name string) string {
-	if command, ok := adminCommands[name]; ok {
-		return command
-	}
-	return ""
-}
-
-// parseAdminCommand is strict: exact command names, each known flag at most
-// once, no unknown tokens, mutually exclusive targets, no payload echo and no
-// database round trips.
 func parseAdminCommand(args []string) (adminCommand, error) {
 	var command adminCommand
 	if len(args) == 0 {
 		return command, errors.New(adminUsage)
 	}
 	if args[0] == "status" || args[0] == "usage" {
-		// Single-word commands: the remainder is flags only.
-		kind := adminKind(args[0])
-		if kind == "" {
-			return command, errors.New(adminUsage)
-		}
 		command.name = args[0]
-		if err := parseAdminFlags(args[1:], &command); err != nil {
-			return command, err
-		}
-		if err := finalizeAdminCommand(&command, kind); err != nil {
-			return command, err
-		}
-		return command, nil
+		return parseSingleWordCommand(command, args[0], args[1:])
 	}
 	if len(args) < 2 {
 		return command, errors.New(adminUsage)
 	}
-	kind := adminKind(args[0] + " " + args[1])
-	if kind == "" {
+	command.name = args[0] + " " + args[1]
+	switch command.name {
+	case "persona create":
+		return parsePersonaCreate(command, args[2:])
+	case "persona select":
+		return parsePersonaSelect(command, args[2:])
+	case "policy set":
+		return parsePolicySet(command, args[2:])
+	case "agent pause", "agent resume":
+		return parseAgentPauseResume(command, args[2:])
+	case "job list":
+		return parseJobList(command, args[2:])
+	case "job inspect", "job retry":
+		return parseSingleTarget(command, args[2:])
+	case "account disable", "post remove", "reply remove":
+		return parseSingleTarget(command, args[2:])
+	default:
 		return command, errors.New(adminUsage)
 	}
-	command.name = args[0] + " " + args[1]
-	rest := args[2:]
-	if kind != "list" && kind != "usage" {
-		// Target commands take exactly their positional slots first.
-		switch {
-		case kind == "file":
-			// AGENT UUID followed by the file path.
-			if len(rest) < 2 {
-				return command, errors.New("expects AGENT and FILE arguments")
-			}
-			if !(command.agent == "" && command.path == "") {
-				return command, errors.New("one target per command")
-			}
-			agent, err := adminID(rest[0])
-			if err != nil {
-				return command, err
-			}
-			command.agent = agent
-			command.path = rest[1]
-			rest = rest[2:]
-		case kind == "version":
-			// AGENT UUID followed by the persona version integer.
-			if len(rest) < 2 {
-				return command, errors.New("expects AGENT and VERSION arguments")
-			}
-			agent, err := adminID(rest[0])
-			if err != nil {
-				return command, err
-			}
-			if _, err := fmt.Sscanf(rest[1], "%d", &command.version); err != nil || command.version < 1 {
-				return command, errors.New("persona version must be a positive integer")
-			}
-			command.agent = agent
-			rest = rest[2:]
-		case kind == "target":
-			// AGENT UUID or --all (validated in the loop below).
-			if len(rest) > 1 {
-				return command, errors.New("one target per command")
-			}
-			if rest[0] == "--all" {
-				command.all = true
-				rest = rest[1:]
-			} else if agent, err := adminID(rest[0]); err != nil {
-				return command, err
-			} else {
-				command.agent = agent
-				rest = rest[1:]
-			}
-		default:
-			// One positional UUID target.
-			if len(rest) == 0 || len(rest) > 1 {
-				return command, errors.New("one target per command")
-			}
-			target, err := adminID(rest[0])
-			if err != nil {
-				return command, err
-			}
-			command.target = target
-			rest = rest[1:]
+}
+
+func parseSingleWordCommand(command adminCommand, name string, rest []string) (adminCommand, error) {
+	command.name = name
+	if len(rest) == 0 {
+		if name == "status" {
+			return command, nil
 		}
 	}
-	if err := parseAdminFlags(rest, &command); err != nil {
-		return command, err
+	allowed := map[string]bool{"--agent": true, "--day": true}
+	if name == "status" {
+		allowed = map[string]bool{}
 	}
-	if err := finalizeAdminCommand(&command, kind); err != nil {
-		return command, err
+	seen := make(map[string]bool)
+	for index := 0; index < len(rest); index++ {
+		flag := rest[index]
+		if !allowed[flag] {
+			return command, errors.New("unexpected flag")
+		}
+		if seen[flag] {
+			return command, errors.New("duplicate flag")
+		}
+		seen[flag] = true
+		value, err := requireFlagValue(rest, index)
+		if err != nil {
+			return command, err
+		}
+		index++
+		switch flag {
+		case "--agent":
+			agent, err := adminID(value)
+			if err != nil {
+				return command, err
+			}
+			command.agent = agent
+		case "--day":
+			if _, err := time.Parse(time.DateOnly, value); err != nil {
+				return command, errors.New("--day requires YYYY-MM-DD")
+			}
+			command.day = value
+		}
 	}
 	return command, nil
 }
 
-func parseAdminFlags(rest []string, command *adminCommand) error {
-	seen := make(map[string]bool)
-	for index := 0; index < len(rest); index++ {
-		token := rest[index]
-		if !strings.HasPrefix(token, "-") {
-			return errors.New("unexpected positional argument after flags")
-		}
-		value := func() (string, error) {
-			if index++; index >= len(rest) {
-				return "", errors.New("missing flag value")
-			}
-			return rest[index], nil
-		}
-		switch token {
-		case "--agent":
-			if seen[token] {
-				return errors.New("one agent per command")
-			}
-			agentValue, err := value()
-			if err != nil {
-				return err
-			}
-			agent, err := adminID(agentValue)
-			if err != nil {
-				return err
-			}
-			seen[token] = true
-			command.agent = agent
-		case "--status":
-			if seen[token] {
-				return errors.New("one status per command")
-			}
-			statusValue, err := value()
-			if err != nil {
-				return err
-			}
-			switch statusValue {
-			case "pending", "running", "retry_wait", "succeeded", "skipped", "cancelled", "failed":
-			default:
-				return errors.New("--status requires an exact status name")
-			}
-			seen[token] = true
-			command.status = statusValue
-		case "--limit":
-			if seen[token] {
-				return errors.New("one limit per command")
-			}
-			limitValue, err := value()
-			if err != nil {
-				return err
-			}
-			var limit int
-			if _, scanErr := fmt.Sscanf(limitValue, "%d", &limit); scanErr != nil || limit < 1 || limit > 64 {
-				return errors.New("--limit requires 1-64")
-			}
-			seen[token] = true
-			command.limit = limit
-		case "--cursor":
-			if seen[token] {
-				return errors.New("one cursor per command")
-			}
-			cursorValue, err := value()
-			if err != nil {
-				return err
-			}
-			cursor, err := postgres.DecodeAdminCursor(cursorValue)
-			if err != nil {
-				return errors.New("cursor token is invalid")
-			}
-			seen[token] = true
-			command.cursor = &cursor
-		case "--day":
-			if seen[token] {
-				return errors.New("one day per command")
-			}
-			dayValue, err := value()
-			if err != nil {
-				return err
-			}
-			if _, err := time.Parse(time.DateOnly, dayValue); err != nil {
-				return errors.New("--day requires YYYY-MM-DD")
-			}
-			seen[token] = true
-			command.day = dayValue
-		default:
-			return fmt.Errorf("unknown flag %s", token)
-		}
+func parsePersonaCreate(command adminCommand, rest []string) (adminCommand, error) {
+	if len(rest) != 2 {
+		return command, errors.New("persona create expects AGENT and FILE")
 	}
-	return nil
+	agent, err := adminID(rest[0])
+	if err != nil {
+		return command, err
+	}
+	command.agent = agent
+	command.path = rest[1]
+	return command, nil
 }
 
-// finalizeAdminCommand guards the exact positional expectations.
-func finalizeAdminCommand(command *adminCommand, kind string) error {
-	switch kind {
-	case "file":
-		if command.agent == "" || command.path == "" {
-			return errors.New("expects AGENT and FILE arguments")
-		}
-	case "version":
-		if command.agent == "" || command.version < 1 {
-			return errors.New("expects AGENT and VERSION arguments")
-		}
-	case "target":
-		if command.agent == "" && !command.all {
-			return errors.New("expects an AGENT target or --all")
-		}
-	case "single":
-		if command.target == "" {
-			return errors.New("expects a UUID target")
-		}
-	case "list", "usage", "empty":
+func parsePersonaSelect(command adminCommand, rest []string) (adminCommand, error) {
+	if len(rest) != 2 {
+		return command, errors.New("persona select expects AGENT and VERSION")
 	}
-	return nil
+	agent, err := adminID(rest[0])
+	if err != nil {
+		return command, err
+	}
+	version, err := parseAdminInt(rest[1])
+	if err != nil || version < 1 {
+		return command, errors.New("persona version must be a positive integer")
+	}
+	command.agent = agent
+	command.version = version
+	return command, nil
+}
+
+func parsePolicySet(command adminCommand, rest []string) (adminCommand, error) {
+	if len(rest) != 2 {
+		return command, errors.New("policy set expects AGENT and FILE")
+	}
+	agent, err := adminID(rest[0])
+	if err != nil {
+		return command, err
+	}
+	command.agent = agent
+	command.path = rest[1]
+	return command, nil
+}
+
+func parseAgentPauseResume(command adminCommand, rest []string) (adminCommand, error) {
+	if len(rest) != 1 {
+		return command, errors.New("agent pause/resume expects an AGENT or --all")
+	}
+	if rest[0] == "--all" {
+		command.all = true
+		return command, nil
+	}
+	agent, err := adminID(rest[0])
+	if err != nil {
+		return command, err
+	}
+	command.agent = agent
+	return command, nil
+}
+
+func parseJobList(command adminCommand, rest []string) (adminCommand, error) {
+	seen := make(map[string]bool)
+	for index := 0; index < len(rest); index++ {
+		flag := rest[index]
+		switch flag {
+		case "--agent", "--status", "--limit", "--cursor":
+			if seen[flag] {
+				return command, errors.New("duplicate flag")
+			}
+			seen[flag] = true
+			value, err := requireFlagValue(rest, index)
+			if err != nil {
+				return command, err
+			}
+			index++
+			switch flag {
+			case "--agent":
+				agent, err := adminID(value)
+				if err != nil {
+					return command, err
+				}
+				command.agent = agent
+			case "--status":
+				switch value {
+				case "pending", "running", "retry_wait", "succeeded", "skipped", "cancelled", "failed":
+				default:
+					return command, errors.New("--status requires an exact status name")
+				}
+				command.status = value
+			case "--limit":
+				limit, err := parseAdminInt(value)
+				if err != nil || limit < 1 || limit > 64 {
+					return command, errors.New("--limit requires 1-64")
+				}
+				command.limit = limit
+			case "--cursor":
+				cursor, err := postgres.DecodeAdminCursor(value)
+				if err != nil {
+					return command, errors.New("cursor token is invalid")
+				}
+				command.cursor = &cursor
+			}
+		default:
+			return command, errors.New("unexpected flag")
+		}
+	}
+	return command, nil
+}
+
+func parseSingleTarget(command adminCommand, rest []string) (adminCommand, error) {
+	if len(rest) != 1 {
+		return command, fmt.Errorf("%s expects one UUID target", command.name)
+	}
+	target, err := adminID(rest[0])
+	if err != nil {
+		return command, err
+	}
+	command.target = target
+	return command, nil
+}
+
+func requireFlagValue(rest []string, index int) (string, error) {
+	if index+1 >= len(rest) {
+		return "", errors.New("missing flag value")
+	}
+	return rest[index+1], nil
+}
+
+// parseAdminInt parses a base-10 integer without accepting prefixes or extra
+// characters such as "3junk".
+func parseAdminInt(value string) (int, error) {
+	if value == "" || value[0] == '+' || value[0] == '-' {
+		return 0, errors.New("invalid integer")
+	}
+	return strconv.Atoi(value)
 }
 
 // readAdminPayload returns strictly bounded file bytes; nothing larger than the
-// persona cap is ever read, and the contents are never echoed.
+// provided cap is ever read, and the contents are never echoed.
 func readAdminPayload(path string, max int64) ([]byte, error) {
 	if path == "" {
 		return nil, errors.New("file path is required")
@@ -354,7 +332,7 @@ func writeAdminJSON(output io.Writer, value any) error {
 func executeAdminCommand(ctx context.Context, command adminCommand, store *postgres.Store, output io.Writer) error {
 	switch command.name {
 	case "persona create":
-		payload, err := readAdminPayload(command.path, maxAdminFileBytes)
+		payload, err := readAdminPayload(command.path, app.MaxAdminPersonaFileBytes)
 		if err != nil {
 			return err
 		}
@@ -373,7 +351,7 @@ func executeAdminCommand(ctx context.Context, command adminCommand, store *postg
 		}
 		return writeAdminJSON(output, map[string]map[string]any{"selected": {"agent": command.agent, "version": command.version}})
 	case "policy set":
-		payload, err := readAdminPayload(command.path, maxAdminFileBytes)
+		payload, err := readAdminPayload(command.path, app.MaxAdminPolicyFileBytes)
 		if err != nil {
 			return err
 		}
@@ -417,7 +395,7 @@ func executeAdminCommand(ctx context.Context, command adminCommand, store *postg
 		if err != nil {
 			return err
 		}
-		return writeAdminJSON(output, map[string]any{"job": inspection.Job, "attempts": inspection.Attempts})
+		return writeAdminJSON(output, map[string]any{"job": inspection.Job, "attempts": inspection.Attempts, "complete": inspection.Complete})
 	case "job retry":
 		retried, err := store.RetryGeneration(ctx, command.target)
 		if err != nil {

@@ -459,6 +459,85 @@ class RunnerTests(unittest.TestCase):
         finally:
             smoke.write_text(original)
 
+    def test_service_smoke_nonzero_child_exit_fails_and_cleans(self):
+        harness = self.checkout / "cmd/worker/harness_test.go"
+        original = harness.read_text()
+        try:
+            # Make the harness exit nonzero after a graceful stop so a failed final
+            # child exit cannot be reported as smoke success.
+            patched = original.replace(
+                '\t\tt.Fatal("serve smoke failed")\n\t}\n}',
+                '\t\tt.Fatal("serve smoke failed")\n\t}\n\tos.Exit(3)\n}',
+            )
+            self.assertNotEqual(patched, original, "harness patch did not apply")
+            harness.write_text(patched)
+            output = self.command("make", "smoke", expected=2)
+            self.assertEqual(output.count("API ready:"), 3, output)
+            self.assertIn("Fake-provider execution passed", output)
+            self.assertNotIn("Continuous service smoke passed", output)
+            runs = list((self.checkout / ".dev/runs").iterdir())
+            self.assertEqual(len(runs), 1)
+            state = runs[0]
+            self.assertFalse(running(state / "api.pid"))
+            self.assertFalse(running(state / "job.pid"))
+            pid_files = list(state.glob("serve-*.pid"))
+            self.assertTrue(pid_files, "service child pid was not recorded")
+            for pid_file in pid_files:
+                pid = int(pid_file.read_text())
+                self.assertFalse(Path(f"/proc/{pid}").exists(), f"service child leaked: {pid}")
+            self.assert_database_removed(state)
+            self.command("bash", "scripts/dev.sh", "clean-run", str(state))
+        finally:
+            harness.write_text(original)
+
+    def test_interrupt_while_service_blocked_cleans_child(self):
+        runs_dir = self.checkout / ".dev/runs"
+        existing = set(runs_dir.glob("smoke.*")) if runs_dir.exists() else set()
+        log = self.checkout / "interrupt-serve.log"
+        process = None
+        try:
+            with log.open("w") as stream:
+                process = subprocess.Popen(
+                    ["bash", "scripts/dev.sh", "smoke"],
+                    cwd=self.checkout,
+                    env=self.env,
+                    stdout=stream,
+                    stderr=subprocess.STDOUT,
+                )
+                # Interrupt only once the continuous service is blocked mid-call,
+                # not merely after it spawns.
+                marker = None
+                deadline = time.monotonic() + 300
+                while process.poll() is None and time.monotonic() < deadline:
+                    for candidate in runs_dir.glob("smoke.*/serve-started"):
+                        if candidate.parent not in existing:
+                            marker = candidate
+                            break
+                    if marker is not None:
+                        break
+                    time.sleep(0.25)
+                self.assertIsNotNone(marker, log.read_text())
+                process.send_signal(signal.SIGTERM)
+                self.assertEqual(
+                    process.wait(timeout=120), 128 + signal.SIGTERM, log.read_text()
+                )
+        finally:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                process.wait(timeout=60)
+        runs = list(runs_dir.iterdir())
+        self.assertEqual(len(runs), 1)
+        state = runs[0]
+        self.assertFalse(running(state / "api.pid"))
+        self.assertFalse(running(state / "job.pid"))
+        pid_files = list(state.glob("serve-*.pid"))
+        self.assertTrue(pid_files, "service child pid was not recorded")
+        for pid_file in pid_files:
+            pid = int(pid_file.read_text())
+            self.assertFalse(Path(f"/proc/{pid}").exists(), f"service child leaked: {pid}")
+        self.assert_database_removed(state)
+        self.command("bash", "scripts/dev.sh", "clean-run", str(state))
+
     def test_test_failure_retains_logs_and_removes_services(self):
         self.command("make", "test", "TEST_ARGS=-run [", expected=2)
         runs = list((self.checkout / ".dev/runs").iterdir())

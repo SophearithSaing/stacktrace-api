@@ -143,10 +143,10 @@ func TestServeSmokeHarness(t *testing.T) {
 	defer store.Close()
 
 	provider := &serveSmokeProvider{
-		control: path,
-		started: os.Getenv("STACKTRACE_SERVE_STARTED"),
-		release: os.Getenv("STACKTRACE_SERVE_RELEASE"),
-		counts:  map[app.GenerationTrigger]int{},
+		control:    path,
+		started:    os.Getenv("STACKTRACE_SERVE_STARTED"),
+		release:    os.Getenv("STACKTRACE_SERVE_RELEASE"),
+		countsFile: os.Getenv("STACKTRACE_SERVE_COUNTS"),
 	}
 	if err := serve(ctx, store, provider, addr, os.Stdout); err != nil && !errors.Is(err, worker.ExecutionStopped) {
 		t.Fatal("serve smoke failed")
@@ -178,20 +178,42 @@ func readServeControl(path string) (serveSmokeControl, bool) {
 }
 
 type serveSmokeProvider struct {
-	control string
-	started string
-	release string
-	mu      sync.Mutex
-	calls   int
-	counts  map[app.GenerationTrigger]int
+	control    string
+	started    string
+	release    string
+	countsFile string
+	mu         sync.Mutex
+	calls      int
+}
+
+// nextCount returns the next per-trigger body index, persisting it to a shared
+// file so a mid-scenario process restart does not reset body sequencing (which
+// could otherwise repeat an already-published body and trip repetition checks).
+func (p *serveSmokeProvider) nextCount(kind app.GenerationTrigger) int {
+	counts := map[string]int{}
+	if p.countsFile != "" {
+		if data, err := os.ReadFile(p.countsFile); err == nil {
+			_ = json.Unmarshal(data, &counts)
+		}
+	}
+	index := counts[string(kind)]
+	counts[string(kind)] = index + 1
+	if p.countsFile != "" {
+		if data, err := json.Marshal(counts); err == nil {
+			temporary := p.countsFile + ".tmp"
+			if os.WriteFile(temporary, data, 0o600) == nil {
+				_ = os.Rename(temporary, p.countsFile)
+			}
+		}
+	}
+	return index
 }
 
 func (p *serveSmokeProvider) Generate(ctx context.Context, request app.GenerationRequest) app.GenerationOutcome {
 	p.mu.Lock()
 	p.calls++
-	kindCount := p.counts[request.Job.TriggerKind]
-	p.counts[request.Job.TriggerKind] = kindCount + 1
 	p.mu.Unlock()
+	kindCount := p.nextCount(request.Job.TriggerKind)
 
 	control, ok := readServeControl(p.control)
 	if !ok {
@@ -301,6 +323,22 @@ func TestServeSmokeControlAtomicUpdates(t *testing.T) {
 	}
 	close(stop)
 	wg.Wait()
+}
+
+// TestServeSmokeBodySequencingPersists proves per-trigger body indices continue
+// across provider instances sharing the counts file, so a restart cannot repeat
+// a published body.
+func TestServeSmokeBodySequencingPersists(t *testing.T) {
+	countsFile := filepath.Join(t.TempDir(), "counts.json")
+	first := &serveSmokeProvider{countsFile: countsFile}
+	second := &serveSmokeProvider{countsFile: countsFile}
+	firstIndex := first.nextCount(app.TriggerReply)
+	if secondIndex := second.nextCount(app.TriggerReply); secondIndex != firstIndex+1 {
+		t.Fatalf("counts did not persist: first=%d second=%d", firstIndex, secondIndex)
+	}
+	if string(serveSmokeBody(app.TriggerReply, firstIndex)) == string(serveSmokeBody(app.TriggerReply, firstIndex+1)) {
+		t.Fatal("consecutive reply bodies repeated")
+	}
 }
 
 // serveSmokeBodies are deliberately word-distinct per call so the safety

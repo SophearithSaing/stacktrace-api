@@ -207,6 +207,18 @@ class RunnerTests(unittest.TestCase):
             self.command("docker", "container", "inspect", name, expected=1)
             self.command("docker", "volume", "inspect", name, expected=1)
 
+    def assert_serve_cleanup(self, state):
+        """Owned children joined before the isolated schema drop, with no leak."""
+        cleanup = (state / "serve-cleanup.log").read_text()
+        lines = [line for line in cleanup.splitlines() if line]
+        self.assertTrue(lines and lines[0] == "joined", cleanup)
+        self.assertIn("schema_dropped=true", lines[1:], cleanup)
+        pid_files = list(state.glob("serve-*.pid"))
+        self.assertTrue(pid_files, "service/API child pid was not recorded")
+        for pid_file in pid_files:
+            pid = int(pid_file.read_text())
+            self.assertFalse(Path(f"/proc/{pid}").exists(), f"owned child leaked: {pid}")
+
     def test_restart_persistence_overrides_and_failed_build(self):
         self.command("make", "dev-up")
         keys = [
@@ -460,17 +472,17 @@ class RunnerTests(unittest.TestCase):
             smoke.write_text(original)
 
     def test_service_smoke_nonzero_child_exit_fails_and_cleans(self):
-        harness = self.checkout / "cmd/worker/harness_test.go"
-        original = harness.read_text()
+        smoke = self.checkout / "scripts/smoke_generation.py"
+        original = smoke.read_text()
         try:
-            # Make the harness exit nonzero after a graceful stop so a failed final
-            # child exit cannot be reported as smoke success.
+            # Kill only the last restarted service child so a nonzero final exit is
+            # detected instead of being reported as smoke success.
             patched = original.replace(
-                '\t\tt.Fatal("serve smoke failed")\n\t}\n}',
-                '\t\tt.Fatal("serve smoke failed")\n\t}\n\tos.Exit(3)\n}',
+                '        # The final graceful shutdown must succeed before success or cleanup is claimed.\n        stop_serve(serve_entry)\n',
+                '        serve_entry["process"].kill()\n        serve_entry["process"].wait()\n        stop_serve(serve_entry)\n',
             )
-            self.assertNotEqual(patched, original, "harness patch did not apply")
-            harness.write_text(patched)
+            self.assertNotEqual(patched, original, "smoke patch did not apply")
+            smoke.write_text(patched)
             output = self.command("make", "smoke", expected=2)
             self.assertEqual(output.count("API ready:"), 3, output)
             self.assertIn("Fake-provider execution passed", output)
@@ -480,15 +492,37 @@ class RunnerTests(unittest.TestCase):
             state = runs[0]
             self.assertFalse(running(state / "api.pid"))
             self.assertFalse(running(state / "job.pid"))
-            pid_files = list(state.glob("serve-*.pid"))
-            self.assertTrue(pid_files, "service child pid was not recorded")
-            for pid_file in pid_files:
-                pid = int(pid_file.read_text())
-                self.assertFalse(Path(f"/proc/{pid}").exists(), f"service child leaked: {pid}")
+            self.assert_serve_cleanup(state)
             self.assert_database_removed(state)
             self.command("bash", "scripts/dev.sh", "clean-run", str(state))
         finally:
-            harness.write_text(original)
+            smoke.write_text(original)
+
+    def test_service_smoke_spawn_pid_failure_cleans_child(self):
+        smoke = self.checkout / "scripts/smoke_generation.py"
+        original = smoke.read_text()
+        try:
+            # Fail immediately after the first owned child spawns and its pid is
+            # recorded: the child must still be reaped by cleanup.
+            patched = original.replace(
+                '        (state / f"{name}-{process.pid}.pid").write_text(str(process.pid))\n',
+                '        (state / f"{name}-{process.pid}.pid").write_text(str(process.pid))\n        raise SystemExit(88)\n',
+            )
+            self.assertNotEqual(patched, original, "spawn patch did not apply")
+            smoke.write_text(patched)
+            output = self.command("make", "smoke", expected=2)
+            self.assertEqual(output.count("API ready:"), 3, output)
+            self.assertIn("Fake-provider execution passed", output)
+            runs = list((self.checkout / ".dev/runs").iterdir())
+            self.assertEqual(len(runs), 1)
+            state = runs[0]
+            self.assertFalse(running(state / "api.pid"))
+            self.assertFalse(running(state / "job.pid"))
+            self.assert_serve_cleanup(state)
+            self.assert_database_removed(state)
+            self.command("bash", "scripts/dev.sh", "clean-run", str(state))
+        finally:
+            smoke.write_text(original)
 
     def test_interrupt_while_service_blocked_cleans_child(self):
         runs_dir = self.checkout / ".dev/runs"
@@ -530,11 +564,8 @@ class RunnerTests(unittest.TestCase):
         state = runs[0]
         self.assertFalse(running(state / "api.pid"))
         self.assertFalse(running(state / "job.pid"))
-        pid_files = list(state.glob("serve-*.pid"))
-        self.assertTrue(pid_files, "service child pid was not recorded")
-        for pid_file in pid_files:
-            pid = int(pid_file.read_text())
-            self.assertFalse(Path(f"/proc/{pid}").exists(), f"service child leaked: {pid}")
+        # Observable ordering: owned children joined before the isolated schema drop.
+        self.assert_serve_cleanup(state)
         self.assert_database_removed(state)
         self.command("bash", "scripts/dev.sh", "clean-run", str(state))
 

@@ -349,7 +349,7 @@ def serve_publications(agent, jobs, query=None):
 
 def serve_phase():
     original_origin = os.environ["API_PUBLIC_ORIGIN"]
-    base_snapshot = snapshot()
+    base_snapshot = execution_snapshot()
     schema = "serve_" + secrets.token_hex(4)
     control = state / "serve-command.json"
     started = state / "serve-started"
@@ -512,9 +512,12 @@ def serve_phase():
         # Once unwinding, ignore further signals so cleanup actually completes.
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         signal.signal(signal.SIGINT, signal.SIG_IGN)
-        cleanup_errors = terminate_children(children)
+        join_errors = terminate_children(children)
+        joined = not join_errors
+        cleanup_errors = list(join_errors)
         dropped = False
-        if schema_created:
+        # Never claim a join or drop the schema while an owned child may be active.
+        if joined and schema_created:
             try:
                 sql(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
                 dropped = sql(f"SELECT count(*) FROM information_schema.schemata WHERE schema_name='{schema}'") == "0"
@@ -523,7 +526,7 @@ def serve_phase():
             if not dropped:
                 cleanup_errors.append("isolated schema drop incomplete")
         try:
-            if snapshot() != base_snapshot:
+            if execution_snapshot() != base_snapshot:
                 cleanup_errors.append("original schema snapshot changed")
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             with opener.open(original_origin.rstrip("/") + "/readyz", timeout=2) as response:
@@ -532,7 +535,7 @@ def serve_phase():
         except Exception:
             cleanup_errors.append("original API unready")
         with (state / "serve-cleanup.log").open("a") as cleanup_log:
-            cleanup_log.write("joined\n")
+            cleanup_log.write("joined\n" if joined else "join_failed\n")
             cleanup_log.write(f"schema_dropped={str(dropped).lower()}\n")
         if cleanup_errors:
             if scenario_ok:

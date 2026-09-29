@@ -524,6 +524,37 @@ class RunnerTests(unittest.TestCase):
         finally:
             smoke.write_text(original)
 
+    def test_service_smoke_join_failure_skips_schema_drop(self):
+        smoke = self.checkout / "scripts/smoke_generation.py"
+        original = smoke.read_text()
+        try:
+            # Report a child-join failure (children are still terminated first): the
+            # schema must not be dropped and no success may be printed.
+            patched = original.replace(
+                "    return errors\n",
+                '    return errors + ["injected join failure"]\n',
+            )
+            self.assertNotEqual(patched, original, "cleanup patch did not apply")
+            smoke.write_text(patched)
+            output = self.command("make", "smoke", expected=2)
+            self.assertNotIn("Continuous service smoke passed", output)
+            runs = list((self.checkout / ".dev/runs").iterdir())
+            self.assertEqual(len(runs), 1)
+            state = runs[0]
+            self.assertFalse(running(state / "api.pid"))
+            self.assertFalse(running(state / "job.pid"))
+            cleanup = (state / "serve-cleanup.log").read_text()
+            lines = [line for line in cleanup.splitlines() if line]
+            self.assertTrue(lines and lines[0] == "join_failed", cleanup)
+            self.assertIn("schema_dropped=false", lines[1:], cleanup)
+            for pid_file in state.glob("serve-*.pid"):
+                pid = int(pid_file.read_text())
+                self.assertFalse(Path(f"/proc/{pid}").exists(), f"owned child leaked: {pid}")
+            self.assert_database_removed(state)
+            self.command("bash", "scripts/dev.sh", "clean-run", str(state))
+        finally:
+            smoke.write_text(original)
+
     def test_interrupt_while_service_blocked_cleans_child(self):
         runs_dir = self.checkout / ".dev/runs"
         existing = set(runs_dir.glob("smoke.*")) if runs_dir.exists() else set()

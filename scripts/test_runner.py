@@ -342,6 +342,7 @@ class RunnerTests(unittest.TestCase):
                 self.assertIn("Schedule restart verification passed", output)
                 self.assertIn("Fake-provider execution passed", output)
                 self.assertIn("Execution verified after API restart", output)
+                self.assertIn("Continuous service smoke passed", output)
                 self.assertEqual(output.count("calls=1 recovered=0 expired=0 published=1"), 4, output)
                 self.assertEqual(output.count("retried=1 denied=0"), 1, output)
                 self.assertEqual(output.count("Execution pass complete: probes=8 claimed=0 calls=0"), 4, output)
@@ -377,6 +378,7 @@ class RunnerTests(unittest.TestCase):
             self.assertFalse((state / "password").exists())
             self.assertFalse((state / "worker").exists())
             self.assertFalse((state / "worker.test").exists())
+            self.assertFalse((state / "admin").exists())
             self.assertFalse((state / "generation-fixture.json").exists())
             self.assert_database_removed(state)
             fixture = json.loads((state / "smoke-fixture.json").read_text())
@@ -420,8 +422,38 @@ class RunnerTests(unittest.TestCase):
             state = runs[0]
             self.assertFalse(running(state / "api.pid"))
             self.assertFalse(running(state / "job.pid"))
-            for name in ("password", "worker", "worker.test", "generation-fixture.json", "execution-command.json", "execution-fixture.json"):
+            for name in ("password", "worker", "worker.test", "admin", "generation-fixture.json", "execution-command.json", "execution-fixture.json"):
                 self.assertFalse((state / name).exists(), name)
+            self.assert_database_removed(state)
+            self.command("bash", "scripts/dev.sh", "clean-run", str(state))
+        finally:
+            smoke.write_text(original)
+
+    def test_service_smoke_failure_cleans_child(self):
+        smoke = self.checkout / "scripts/smoke_generation.py"
+        original = smoke.read_text()
+        try:
+            # Fail right after the Python-owned continuous service child starts,
+            # then verify the child is joined/killed and no run state leaks.
+            smoke.write_text(
+                original.replace(
+                    "        wait_ready(port, 200)\n",
+                    "        raise SystemExit(77)\n",
+                )
+            )
+            output = self.command("make", "smoke", expected=2)
+            self.assertEqual(output.count("API ready:"), 3, output)
+            self.assertIn("Fake-provider execution passed", output)
+            runs = list((self.checkout / ".dev/runs").iterdir())
+            self.assertEqual(len(runs), 1)
+            state = runs[0]
+            self.assertFalse(running(state / "api.pid"))
+            self.assertFalse(running(state / "job.pid"))
+            pid_files = list(state.glob("serve-*.pid"))
+            self.assertTrue(pid_files, "service child pid was not recorded")
+            for pid_file in pid_files:
+                pid = int(pid_file.read_text())
+                self.assertFalse(Path(f"/proc/{pid}").exists(), f"service child leaked: {pid}")
             self.assert_database_removed(state)
             self.command("bash", "scripts/dev.sh", "clean-run", str(state))
         finally:

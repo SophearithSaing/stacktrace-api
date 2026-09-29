@@ -305,6 +305,11 @@ def serve_phase():
         assert len(listed["jobs"]) <= 3
         assert admin("job", "inspect", rows[0]["job_id"])["complete"] is True
         assert admin("usage")["charged_tokens"] >= 4 * 120
+        # Built admin mutation against the live service: re-apply the current
+        # (identical) policy, which preserves publication history and schedule.
+        policy_file = state / "serve-policy.json"
+        write_fixture(policy_file, json.loads(sql(f"SELECT policy FROM agent_settings WHERE agent_id='{agent}'")))
+        assert admin("policy", "set", agent, str(policy_file))["policy_set"]["agent"] == agent
 
         # Pause during a blocked call: the admitted result must not publish. This
         # runs before the expensive unknown-accounting outcomes so the fixed fleet
@@ -370,6 +375,10 @@ def serve_phase():
         wait_ready(port, 200)
         time.sleep(6)
         assert execution_snapshot() == before, "restart replayed or duplicated durable state"
+
+        # Trusted account disable revokes authority without erasing provenance.
+        assert admin("account", "disable", agent)["disabled"] is True
+        assert sql(f"SELECT (disabled_at IS NOT NULL)::text FROM accounts WHERE id='{agent}'") == "true"
         print("Continuous service smoke passed: autonomous publications, admin controls, degradation recovery, conservative charging, pause/remove barriers and restart durability.")
     finally:
         if process is not None and process.poll() is None:

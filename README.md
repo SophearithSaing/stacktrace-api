@@ -126,8 +126,9 @@ Each test/check/smoke invocation owns disposable resources, supports concurrent
 runs, and cleans up afterward. Failures retain logs at the printed path.
 
 `make smoke` checks the built worker CLI before migration and before/after seeding,
-then verifies enqueue/replay, live HTTP triggers/cancellation, and generated content
-and provenance across API/worker restarts with real PostgreSQL. Execution uses a
+then verifies enqueue/replay, live HTTP triggers/cancellation, generated content
+and provenance across API/worker restarts, and the continuous `worker serve`
+lifecycle, with real PostgreSQL. Execution uses a
 guarded `go test -c` command-handler harness with a fake provider, not a production
 fake flag or a live Together connection. Adapter HTTP behavior is tested separately
 with local TLS fixtures. Smoke also checks provider-failure isolation, readiness,

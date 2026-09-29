@@ -15,6 +15,20 @@ import urllib.request
 from smoke import client
 
 
+class ServeInterrupted(Exception):
+    """Raised from a signal handler so serve cleanup unwinds before exit."""
+
+
+def _interrupt(signum, _frame):
+    raise ServeInterrupted(f"interrupted by signal {signum}")
+
+
+# Managed TERM/INT must unwind through the phase's finally (terminating and
+# joining Python-owned children) instead of killing the interpreter mid-wait.
+signal.signal(signal.SIGTERM, _interrupt)
+signal.signal(signal.SIGINT, _interrupt)
+
+
 state = Path(sys.argv[1])
 phase = sys.argv[2]
 worker = state / "worker"
@@ -182,7 +196,14 @@ def admin(*args):
 
 
 def write_serve_control(path, mode="publish", block=False):
-    write_fixture(path, dict(mode=mode, block=block))
+    # Same-directory temp + atomic rename so the Go reader never sees a partial
+    # or empty control file (which would now fail closed).
+    payload = json.dumps(dict(mode=mode, block=block))
+    temporary = path.with_name(path.name + f".tmp{os.getpid()}")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w") as file:
+        file.write(payload)
+    os.replace(temporary, path)
 
 
 def start_serve(control, started, release):
@@ -201,10 +222,12 @@ def start_serve(control, started, release):
         [str(state / "worker.test"), "-test.run=^TestServeSmokeHarness$", "-test.count=1", "-test.timeout=300s"],
         env=env, text=True, stdout=log, stderr=subprocess.STDOUT,
     )
+    # Record the pid here so spawn and pid ownership cannot diverge on failure.
+    (state / f"serve-{port}.pid").write_text(str(process.pid))
     return process, log, port
 
 
-def stop_serve(process, log):
+def terminate(process, log, check):
     if process.poll() is None:
         process.send_signal(signal.SIGTERM)
         try:
@@ -213,7 +236,13 @@ def stop_serve(process, log):
             process.kill()
             process.wait(timeout=10)
     log.close()
-    assert process.returncode == 0, f"serve harness exited {process.returncode}"
+    if check and process.returncode != 0:
+        raise AssertionError(f"serve harness exited {process.returncode}")
+    return process.returncode
+
+
+def stop_serve(process, log):
+    return terminate(process, log, check=True)
 
 
 def serve_publications(agent, jobs):
@@ -250,8 +279,12 @@ def serve_phase():
     # remain valid, and give this agent a genuinely new due slot with headroom above
     # the scheduled post it already published earlier in the run.
     sql(f"UPDATE agent_settings SET policy=jsonb_set(policy,'{{timezone}}','\"UTC\"') WHERE agent_id<>'{agent}'")
+    # Keep the seeded convention: derive a database-time timezone whose local clock
+    # is near noon, so scheduled slots cannot cross midnight near UTC day edges.
+    offset = int(sql("SELECT extract(hour from clock_timestamp() AT TIME ZONE 'UTC')::int")) - 12
+    zone = "Etc/GMT" + ("+" if offset >= 0 else "") + str(offset)
     sql(f"""UPDATE agent_settings SET enabled=true, policy=policy || jsonb_build_object(
-        'timezone','Etc/GMT','active_start','00:00','active_end','23:59',
+        'timezone','{zone}','active_start','00:00','active_end','23:59',
         'scheduled_min_per_day',2,'scheduled_max_per_day',2,'scheduled_post_cap_per_day',3,
         'min_spacing_seconds',1,'response_min_delay_seconds',0,'response_max_delay_seconds',0,
         'human_post_probability_bps',0,'reply_probability_bps',10000,'repost_probability_bps',10000,
@@ -264,9 +297,11 @@ def serve_phase():
         remaining_slots=1,next_post_at=clock_timestamp()+interval '1 second' WHERE agent_id='{agent}';""")
 
     write_serve_control(control, "publish")
-    process, log, port = start_serve(control, started, release)
-    (state / f"serve-{port}.pid").write_text(str(process.pid))
+    children = []
+    process = log = None
     try:
+        process, log, port = start_serve(control, started, release)
+        children.append((process, log))
         wait_ready(port, 200)
 
         # The service schedules and publishes one post without any manual execute.
@@ -372,6 +407,7 @@ def serve_phase():
         stop_serve(process, log)
         process = log = None
         process, log, port = start_serve(control, started, release)
+        children.append((process, log))
         wait_ready(port, 200)
         time.sleep(6)
         assert execution_snapshot() == before, "restart replayed or duplicated durable state"
@@ -379,17 +415,20 @@ def serve_phase():
         # Trusted account disable revokes authority without erasing provenance.
         assert admin("account", "disable", agent)["disabled"] is True
         assert sql(f"SELECT (disabled_at IS NOT NULL)::text FROM accounts WHERE id='{agent}'") == "true"
+        # A graceful final shutdown must succeed before any success is reported.
+        stop_serve(process, log)
+        process = log = None
+        sql(f"UPDATE agent_settings SET enabled=false WHERE agent_id='{agent}'")
         print("Continuous service smoke passed: autonomous publications, admin controls, degradation recovery, conservative charging, pause/remove barriers and restart durability.")
     finally:
-        if process is not None and process.poll() is None:
-            process.send_signal(signal.SIGTERM)
+        # Boundedly terminate and reap every Python-owned child (original and
+        # restarted). Already-reaped children are no-ops, and a cleanup error never
+        # masks the original failure.
+        for child, child_log in children:
             try:
-                process.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=10)
-        if log is not None:
-            log.close()
+                terminate(child, child_log, check=False)
+            except Exception:
+                pass
         sql(f"UPDATE agent_settings SET enabled=false WHERE agent_id='{agent}'")
 
 

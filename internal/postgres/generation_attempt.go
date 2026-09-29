@@ -102,6 +102,12 @@ func (q *Queries) reserveGeneration(ctx context.Context, id app.ID, version int6
 		}
 		return app.GenerationAdmission{Reason: denial}, q.finishExecutionJob(ctx, job, status, denial, now, now)
 	}
+	// Eligibility owns the settings lock until commit; no pause can pass between
+	// this snapshot and reservation. Settlement never needs that lock.
+	var pauseRevision int64
+	if err := q.queryer.QueryRowContext(ctx, `SELECT pause_revision FROM agent_settings WHERE agent_id=$1`, job.AgentID).Scan(&pauseRevision); err != nil {
+		return app.GenerationAdmission{}, databaseError(ctx, err)
+	}
 	prompt, err := llm.BuildPrompt(app.GenerationRequest{Job: job, Context: input})
 	if err != nil {
 		return app.GenerationAdmission{}, invalidGeneration("context")
@@ -194,13 +200,13 @@ func (q *Queries) reserveGeneration(ctx context.Context, id app.ID, version int6
 	}
 	attempt := app.GenerationAttempt{ID: app.NewID(), JobID: id, AttemptNumber: len(attempts) + 1, LeaseVersion: version,
 		Provider: llm.Provider, Model: llm.Model, ContextHash: prompt.Hash(), ContextBuilderVersion: llm.ContextBuilderVersion,
-		BudgetDay: day, ReservedTokens: reserved, Status: app.AttemptReserved, StartedAt: fresh}
+		BudgetDay: day, ReservedTokens: reserved, Status: app.AttemptReserved, StartedAt: fresh, PauseRevision: &pauseRevision}
 	if attempt.Validate() != nil {
 		return app.GenerationAdmission{}, invalidGeneration("preparation")
 	}
 	inserted, err := q.queryer.ExecContext(ctx, `INSERT INTO generation_attempts(id,job_id,attempt_number,lease_version,provider,model,
-		context_hash,context_builder_version,budget_day,reserved_tokens,status,started_at)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'reserved',$11)`, attempt.ID, id, attempt.AttemptNumber, version, attempt.Provider, attempt.Model, attempt.ContextHash, attempt.ContextBuilderVersion, day, reserved, fresh)
+		context_hash,context_builder_version,budget_day,reserved_tokens,status,started_at,pause_revision)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'reserved',$11,$12)`, attempt.ID, id, attempt.AttemptNumber, version, attempt.Provider, attempt.Model, attempt.ContextHash, attempt.ContextBuilderVersion, day, reserved, fresh, pauseRevision)
 	if err := generationClaimMutation(ctx, inserted, err); err != nil {
 		return app.GenerationAdmission{}, err
 	}

@@ -19,10 +19,12 @@ const (
 // Unknown outcomes retain the entire reservation; retrying creates a new attempt
 // on the same job. Usage is nullable even for successful output.
 type GenerationAttempt struct {
-	ID                    ID
-	JobID                 ID
-	AttemptNumber         int
-	LeaseVersion          int64
+	ID            ID
+	JobID         ID
+	AttemptNumber int
+	LeaseVersion  int64
+	// Nil for legacy calls: readable accounting, but no publication authority.
+	PauseRevision         *int64
 	Provider              string
 	Model                 string
 	ProviderRequestID     string
@@ -48,6 +50,9 @@ type GenerationAttempt struct {
 func (a GenerationAttempt) Validate() error {
 	if !validGenerationID(a.ID) || !validGenerationID(a.JobID) || a.AttemptNumber < 1 || a.AttemptNumber > 2147483647 || a.LeaseVersion < 1 {
 		return fmt.Errorf("invalid attempt identity")
+	}
+	if a.PauseRevision != nil && *a.PauseRevision < 0 {
+		return fmt.Errorf("invalid attempt pause revision")
 	}
 	if !validGenerationCode(a.Provider) || !validGenerationText(a.Model, 128) || !validGenerationCode(a.ContextBuilderVersion) || len(a.ProviderRequestID) > 256 || a.ProviderRequestID != "" && !validGenerationText(a.ProviderRequestID, 256) {
 		return fmt.Errorf("invalid attempt provider or context metadata")
@@ -125,6 +130,9 @@ func ValidateGenerationAttemptTransition(before, after GenerationAttempt) error 
 	}
 	if before.Status != AttemptReserved || after.Status == AttemptReserved {
 		return fmt.Errorf("only reserved attempts may finish")
+	}
+	if (before.PauseRevision == nil) != (after.PauseRevision == nil) || before.PauseRevision != nil && *before.PauseRevision != *after.PauseRevision {
+		return fmt.Errorf("attempt pause revision is immutable")
 	}
 	if before.ID != after.ID || before.JobID != after.JobID || before.AttemptNumber != after.AttemptNumber || before.LeaseVersion != after.LeaseVersion || before.Provider != after.Provider || before.Model != after.Model || before.ContextHash != after.ContextHash || before.ContextBuilderVersion != after.ContextBuilderVersion || before.BudgetDay != after.BudgetDay || before.ReservedTokens != after.ReservedTokens || !before.StartedAt.Equal(after.StartedAt) {
 		return fmt.Errorf("attempt identity and reservation are immutable")

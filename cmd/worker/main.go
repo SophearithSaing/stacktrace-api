@@ -26,8 +26,8 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, output io.Writer) error {
-	if len(args) != 1 || (args[0] != "check" && args[0] != "schedule" && args[0] != "execute") {
-		return errors.New("usage: worker check | schedule | execute (read-only preflight | bounded enqueue pass | bounded generation pass)")
+	if len(args) != 1 || (args[0] != "check" && args[0] != "schedule" && args[0] != "execute" && args[0] != "serve") {
+		return errors.New("usage: worker check | schedule | execute | serve (read-only preflight | bounded enqueue pass | bounded generation pass | continuous serve)")
 	}
 	// Includes opening the database, not just the preflight queries.
 	deadline := 10 * time.Second
@@ -38,11 +38,17 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 	if args[0] == "execute" {
 		deadline, role = worker.ExecutionTimeout, config.WorkerExecute
 	}
-	ctx, cancel := context.WithTimeout(ctx, deadline)
-	defer cancel()
+	if args[0] == "serve" {
+		role = config.WorkerServe
+	}
+	if role != config.WorkerServe {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, deadline)
+		defer cancel()
+	}
 	cfg, err := config.Load(role)
 	if err != nil {
-		if role == config.WorkerExecute {
+		if role == config.WorkerExecute || role == config.WorkerServe {
 			return worker.ExecutionConfiguration
 		}
 		return err
@@ -50,7 +56,7 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 	// Construction is local and cannot make a request. No other command reads
 	// credentials or even constructs the provider.
 	var provider *llm.Together
-	if role == config.WorkerExecute {
+	if role == config.WorkerExecute || role == config.WorkerServe {
 		provider, err = llm.NewTogether(cfg.TogetherAPIKey)
 		if err != nil {
 			return worker.ExecutionConfiguration
@@ -58,7 +64,7 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 	}
 	store, err := postgres.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
-		if role == config.WorkerExecute {
+		if role == config.WorkerExecute || role == config.WorkerServe {
 			if ctx.Err() != nil {
 				return worker.ExecutionStopped
 			}
@@ -69,6 +75,9 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 	defer store.Close()
 	if role == config.WorkerExecute {
 		return execute(ctx, store, provider, output)
+	}
+	if role == config.WorkerServe {
+		return serve(ctx, store, provider, cfg.HTTPAddr, output)
 	}
 	if args[0] == "schedule" {
 		result, err := schedule(ctx, store)

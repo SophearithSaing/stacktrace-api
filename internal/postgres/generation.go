@@ -91,7 +91,7 @@ func (s *Store) InitializeAgentSettings(ctx context.Context, settings app.AgentS
 // A conflict is followed by a fresh statement so concurrent committed settings
 // are visible at READ COMMITTED. No UPDATE side effects are used to return a row.
 func (q *Queries) InitializeAgentSettings(ctx context.Context, settings app.AgentSettings) (app.AgentSettings, error) {
-	if settings.Validate() != nil {
+	if settings.Validate() != nil || settings.PauseRevision != 0 {
 		return app.AgentSettings{}, invalidGeneration("settings")
 	}
 	ctx, cancel := q.queryContext(ctx)
@@ -117,22 +117,34 @@ func (q *Queries) InitializeAgentSettings(ctx context.Context, settings app.Agen
 }
 
 func (q *Queries) AgentSettingsByID(ctx context.Context, agentID app.ID) (app.AgentSettings, error) {
+	settings, err := q.readAgentSettings(ctx, agentID)
+	var invalid *app.ValidationError
+	if errors.As(err, &invalid) {
+		return app.AgentSettings{}, app.ErrUnavailable
+	}
+	return settings, err
+}
+
+// Keep malformed configuration distinct from database failure for trusted
+// controls. Public/internal readers retain the existing unavailable contract.
+func (q *Queries) readAgentSettings(ctx context.Context, agentID app.ID) (app.AgentSettings, error) {
 	ctx, cancel := q.queryContext(ctx)
 	defer cancel()
 	var settings app.AgentSettings
 	var policy []byte
 	var accountType app.AccountType
-	err := q.queryer.QueryRowContext(ctx, `SELECT s.agent_id,s.persona_version,s.enabled,s.policy,s.next_post_at,
-		COALESCE(to_char(s.schedule_date,'YYYY-MM-DD'),''),s.remaining_slots,s.last_published_at,s.updated_at,a.type
+	err := q.queryer.QueryRowContext(ctx, `SELECT s.agent_id,s.persona_version,s.enabled,
+		CASE WHEN octet_length(s.policy::text)<=8192 THEN s.policy END,s.next_post_at,
+		COALESCE(to_char(s.schedule_date,'YYYY-MM-DD'),''),s.remaining_slots,s.last_published_at,s.updated_at,s.pause_revision,a.type
 		FROM agent_settings s JOIN accounts a ON a.id=s.agent_id WHERE s.agent_id=$1`, agentID).Scan(
 		&settings.AgentID, &settings.PersonaVersion, &settings.Enabled, &policy, &settings.NextPostAt,
-		&settings.ScheduleDate, &settings.RemainingSlots, &settings.LastPublishedAt, &settings.UpdatedAt, &accountType)
+		&settings.ScheduleDate, &settings.RemainingSlots, &settings.LastPublishedAt, &settings.UpdatedAt, &settings.PauseRevision, &accountType)
 	if err != nil {
 		return app.AgentSettings{}, databaseError(ctx, err)
 	}
 	settings.Policy, err = app.DecodeGenerationPolicy(policy)
 	if err != nil || settings.Validate() != nil || accountType != app.AccountAgent {
-		return app.AgentSettings{}, app.ErrUnavailable
+		return app.AgentSettings{}, invalidGeneration("settings")
 	}
 	return settings, nil
 }
@@ -202,12 +214,12 @@ func (q *Queries) GenerationAttemptByID(ctx context.Context, id app.ID) (app.Gen
 	err := q.queryer.QueryRowContext(ctx, `SELECT t.id,t.job_id,t.attempt_number,t.lease_version,t.provider,t.model,
 		COALESCE(t.provider_request_id,''),t.context_hash,t.context_builder_version,to_char(t.budget_day,'YYYY-MM-DD'),
 		t.reserved_tokens,t.input_tokens,t.output_tokens,t.status,COALESCE(t.error_code,''),t.started_at,t.finished_at,
-		COALESCE(t.output_digest,''),COALESCE(t.decision,''),COALESCE(t.skip_reason,''),t.not_before,a.type
+		COALESCE(t.output_digest,''),COALESCE(t.decision,''),COALESCE(t.skip_reason,''),t.not_before,t.pause_revision,a.type
 		FROM generation_attempts t JOIN generation_jobs j ON j.id=t.job_id JOIN accounts a ON a.id=j.agent_id WHERE t.id=$1`, id).Scan(
 		&attempt.ID, &attempt.JobID, &attempt.AttemptNumber, &attempt.LeaseVersion, &attempt.Provider, &attempt.Model,
 		&attempt.ProviderRequestID, &attempt.ContextHash, &attempt.ContextBuilderVersion, &attempt.BudgetDay,
 		&attempt.ReservedTokens, &attempt.InputTokens, &attempt.OutputTokens, &attempt.Status, &attempt.ErrorCode,
-		&attempt.StartedAt, &attempt.FinishedAt, &attempt.OutputDigest, &attempt.Decision, &attempt.SkipReason, &attempt.NotBefore, &accountType)
+		&attempt.StartedAt, &attempt.FinishedAt, &attempt.OutputDigest, &attempt.Decision, &attempt.SkipReason, &attempt.NotBefore, &attempt.PauseRevision, &accountType)
 	if err != nil {
 		return app.GenerationAttempt{}, databaseError(ctx, err)
 	}

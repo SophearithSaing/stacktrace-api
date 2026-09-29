@@ -47,7 +47,7 @@ cleanup() {
         echo "Command failed (status $result). Diagnostics: $state" >&2
         if [[ $disposable == 1 && $cleanup_failed == 0 ]]; then
             rm -f "$state/password" "$state/csrf-key" "$state/cursor-key" "$state/server" "$state/server.next" "$state/db" "$state/worker" \
-                "$state/worker.test" "$state/execution-command.json" "$state/execution-fixture.json" "$state/generation-fixture.json"
+                "$state/worker.test" "$state/admin" "$state/execution-command.json" "$state/execution-fixture.json" "$state/generation-fixture.json"
         fi
     fi
     exit "$result"
@@ -98,6 +98,8 @@ fi
 if [[ $command == smoke ]]; then
     run go build -o "$state/worker" ./cmd/worker
     run go test -c -o "$state/worker.test" ./cmd/worker
+    run go build -o "$state/admin" ./cmd/admin
+    export STACKTRACE_ADMIN="$state/admin"
 fi
 start_database
 
@@ -135,6 +137,7 @@ case "$command" in
             stop_process api
             start_api 1 0
             run python3 -B scripts/smoke_generation.py "$state" execute-verify "${smoke_sql[@]}"
+            run python3 -B scripts/smoke_generation.py "$state" serve "${smoke_sql[@]}"
         else
             start_api 0 "${DEV_PORT:-8080}"
             echo "Logs: $state/api.log, $state/postgres.log, $state/commands.log"

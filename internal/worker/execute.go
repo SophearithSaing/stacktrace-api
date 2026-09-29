@@ -50,8 +50,8 @@ type ExecutionStore interface {
 }
 
 type ExecutionSummary struct {
-	Probes, Claimed, Calls, Recovered, Expired             int
-	Published, Skipped, Cancelled, Failed, Retried, Denied int
+	Probes, Claimed, Calls, CallsSucceeded, Recovered, Expired int
+	Published, Skipped, Cancelled, Failed, Retried, Denied     int
 }
 
 // Execute performs one bounded pass, never sleeps through backoff, and makes at
@@ -139,6 +139,20 @@ func durableStop(attempt *app.GenerationAttempt) error {
 	return nil
 }
 
+// durableStopAccounting is the acknowledged-attempt stop: only unsupported
+// accounting retains its execution stop because no repair acknowledgement
+// exists in this scope, while credentials/configuration repair acks are
+// handled by RetryGeneration and the worker.
+func durableStopAccounting(attempt *app.GenerationAttempt) error {
+	if attempt == nil || attempt.Status == app.AttemptReserved || attempt.Status == app.AttemptSucceeded {
+		return nil
+	}
+	if app.GenerationFailure(attempt.ErrorCode) == app.GenerationAccountingUnsupported {
+		return ExecutionAccounting
+	}
+	return nil
+}
+
 func (r *execution) job(ctx context.Context, job app.GenerationJob) error {
 	prior, err := r.store.LatestGenerationAttempt(ctx, job.ID)
 	if err != nil {
@@ -165,7 +179,14 @@ func (r *execution) job(ctx context.Context, job app.GenerationJob) error {
 			}
 			return nil
 		}
-		if stop := durableStop(prior); stop != nil {
+		// An acknowledged provider credentials/configuration attempt can only
+		// exist after a trusted operator retry re-opened the failed job;
+		// unavailable claims cannot move a failed job's availability. The
+		// operator ack is the repaired environment, so this worker may call
+		// again with a fresh reservation. Ordinary restarts stay stopped for
+		// unacknowledged fatal outcomes, and unsupported accounting never has a
+		// repair acknowledgement in this scope.
+		if stop := durableStopAccounting(prior); stop != nil {
 			return stop
 		}
 	}
@@ -251,7 +272,13 @@ func (r *execution) call(ctx context.Context, request app.GenerationRequest) (ap
 		outcome = app.GenerationOutcome{Failure: app.GenerationTimeout}
 	}
 	stopRenew()
-	return outcome, <-done
+	leaseErr := <-done
+	// Only a valid, non-cancelled provider outcome is healthy evidence. A late
+	// success returned after cancellation is deliberately not counted.
+	if leaseErr == nil && callCtx.Err() == nil && outcome.Failure == "" {
+		r.summary.CallsSucceeded++
+	}
+	return outcome, leaseErr
 }
 
 // Cancellation settlement has one separate total cleanup budget. An uncertain

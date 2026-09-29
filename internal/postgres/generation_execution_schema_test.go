@@ -68,7 +68,7 @@ func TestMigrateGenerationExecutionFromOutput(t *testing.T) {
 		result := map[string]string{}
 		for _, table := range []string{"accounts", "posts", "replies", "reposts", "agent_personas", "generation_jobs", "generation_attempts"} {
 			var data string
-			if err := store.db.QueryRow(`SELECT jsonb_agg(to_jsonb(row)-'decision'-'skip_reason'-'not_before' ORDER BY to_jsonb(row)::text)::text FROM ` + table + ` row`).Scan(&data); err != nil {
+			if err := store.db.QueryRow(`SELECT jsonb_agg(to_jsonb(row)-'decision'-'skip_reason'-'not_before'-'pause_revision' ORDER BY to_jsonb(row)::text)::text FROM ` + table + ` row`).Scan(&data); err != nil {
 				t.Fatal(err)
 			}
 			result[table] = data

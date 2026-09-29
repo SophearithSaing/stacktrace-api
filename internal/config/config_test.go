@@ -42,6 +42,19 @@ func TestLoadRoles(t *testing.T) {
 	if _, err := load("worker", getenv); err == nil {
 		t.Fatal("accepted an unimplemented role")
 	}
+
+	// Worker serve uses its own listener and provider key but no server secrets.
+	env["TOGETHER_API_KEY"] = "provider-key"
+	cfg, err = load(WorkerServe, func(key string) string { return env[key] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HTTPAddr != "127.0.0.1:8081" || cfg.TogetherAPIKey != "provider-key" {
+		t.Fatalf("unexpected worker serve defaults: addr=%q key=%q", cfg.HTTPAddr, cfg.TogetherAPIKey)
+	}
+	if cfg.APIPublicOrigin != "" || cfg.ClientOrigins != nil || len(cfg.CSRFSigningKey) != 0 || len(cfg.CursorSigningKey) != 0 {
+		t.Fatal("worker serve loaded server-only settings")
+	}
 }
 
 func TestLoadProductionDefaults(t *testing.T) {

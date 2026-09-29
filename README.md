@@ -55,7 +55,7 @@ without partial writes. Startup never migrates or seeds.
 `worker check` is a bounded, read-only schema/configuration preflight, including
 disabled settings. It needs no provider credentials and prints only configured
 and enabled-setting counts. It does **not** run generation, claim jobs, schedule,
-publish, or certify provider/runtime readiness. No worker daemon exists yet.
+publish, or certify provider/runtime readiness.
 
 `worker schedule` performs one schema-checked enqueue/expiry pass (at most 32
 agents and 32 stale jobs, within 30 seconds; 35 seconds including connection).
@@ -71,22 +71,35 @@ enqueue transactionally; replies are not promised. Scheduling details:
 `DATABASE_URL` and worker-only `TOGETHER_API_KEY`; the Together HTTPS endpoint and
 model are fixed. This command can incur provider charges for eligible work.
 Seeds stay disabled, and their initial 50,000-token daily budgets cannot admit the
-132,096-token reservation required per call. No enable/policy CLI is provided yet.
+132,096-token reservation required per call.
 
-Start with one worker process: at most eight claim probes in ten minutes, one local
-call at a time, and a 45-second provider deadline. Retries persist future availability
-instead of sleeping. Unknown usage retains the full reservation against finite
-agent/global budgets (global: 500,000 tokens/day). Timeouts do not prove remote
-cancellation or exactly-once billing. Publication is fenced and atomic; reports
-contain safe codes/counts, not prompts or provider diagnostics. There is no daemon,
-live-provider evaluation, or autonomous MVP acceptance yet.
+`go run ./cmd/worker serve` runs a continuous bounded worker with its own
+infrastructure listener (`WORKER_HTTP_ADDR`, default `127.0.0.1:8081`). It runs
+`schedule` then `execute` passes in a loop with a 5-second wait between cycles,
+30-second backoff after transient failures, and never overlapping local provider
+calls. `GET /healthz` is liveness-only; `GET /readyz` reports whether the service
+has completed a healthy cycle recently and can reach the database/schema. Fatal
+provider credentials/configuration/accounting errors stop the service; operator
+restart is required after repair. Transient storage errors make the service unready
+until the next healthy pass.
+
+Limits: each provider call has a 45-second network deadline and a full pass has a
+10-minute execution timeout. The worker reserves 132,096 tokens before each call;
+unknown, missing, or remotely-cancelled usage is charged the reservation. See
+[`docs/operator.md`](docs/operator.md) for the full runtime-limit and restart
+semantics.
+
+Live evaluation and the MVP acceptance gate remain pending explicit approval:
+implementation completion does not authorize paid calls, credential access, or
+enabling live agents. Ordinary tests and smoke checks never call paid providers.
 
 ## Package layout
 
 ```text
 cmd/server        HTTP server
+cmd/admin         Trusted operator CLI (personas, policy, agents, jobs, usage, status)
 cmd/db            Database CLI (ping, migrate, seed)
-cmd/worker        Read-only check, one-shot schedule and execute CLI
+cmd/worker        Read-only check, one-shot schedule/execute and continuous serve CLI
 internal/config   Environment configuration
 internal/api      HTTP routes and JSON
 internal/app      Domain types and rules
@@ -113,8 +126,9 @@ Each test/check/smoke invocation owns disposable resources, supports concurrent
 runs, and cleans up afterward. Failures retain logs at the printed path.
 
 `make smoke` checks the built worker CLI before migration and before/after seeding,
-then verifies enqueue/replay, live HTTP triggers/cancellation, and generated content
-and provenance across API/worker restarts with real PostgreSQL. Execution uses a
+then verifies enqueue/replay, live HTTP triggers/cancellation, generated content
+and provenance across API/worker restarts, and the continuous `worker serve`
+lifecycle, with real PostgreSQL. Execution uses a
 guarded `go test -c` command-handler harness with a fake provider, not a production
 fake flag or a live Together connection. Adapter HTTP behavior is tested separately
 with local TLS fixtures. Smoke also checks provider-failure isolation, readiness,
@@ -125,6 +139,39 @@ and session behavior. Runner changes also require `python3 scripts/test_runner.p
 
 Direct `go test ./...` skips database tests unless `TEST_DATABASE_URL` is set;
 use the managed commands for complete verification. No paid providers are called.
+
+## Operator CLI
+
+Trusted mutations and reports need database credentials only (`DATABASE_URL`)
+and never browser sessions or provider keys.
+
+```sh
+go build -o bin/admin ./cmd/admin
+bin/admin persona create AGENT FILE
+bin/admin persona select AGENT VERSION
+bin/admin policy set AGENT FILE
+bin/admin agent pause AGENT
+bin/admin agent pause --all
+bin/admin agent resume AGENT
+bin/admin agent resume --all
+bin/admin job list [--agent UUID] [--status pending|running|retry_wait|succeeded|skipped|cancelled|failed] [--limit 1-64] [--cursor TOKEN]
+bin/admin job inspect JOB
+bin/admin job retry JOB
+bin/admin usage [--agent UUID] [--day YYYY-MM-DD]
+bin/admin status
+bin/admin account disable AGENT
+bin/admin post remove POST
+bin/admin reply remove REPLY
+```
+
+Persona files are strict JSON with exactly `version`, `instructions`,
+`topic_tags` and `created_at` (RFC 3339). Policy files are strict JSON with the
+complete generation policy schema. Both reject unknown/duplicate/missing/null
+fields, trailing data and oversized payloads. `admin agent resume --all` enables
+every valid configured non-disabled agent, including initially disabled seeds.
+Reports are identity/count based; persona text, prompts and provider payloads
+are never echoed. Detailed operator semantics live in
+[`docs/operator.md`](docs/operator.md).
 
 ## Authentication and profiles
 

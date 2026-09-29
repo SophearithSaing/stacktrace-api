@@ -150,10 +150,10 @@ func (q *Queries) lockPreparedGenerationCandidates(ctx context.Context, source g
 		var policy []byte
 		err := q.queryer.QueryRowContext(ctx, `SELECT s.agent_id,s.persona_version,s.enabled,
 			CASE WHEN octet_length(s.policy::text)<=8192 THEN s.policy END,s.next_post_at,
-			COALESCE(to_char(s.schedule_date,'YYYY-MM-DD'),''),s.remaining_slots,s.last_published_at,s.updated_at
+			COALESCE(to_char(s.schedule_date,'YYYY-MM-DD'),''),s.remaining_slots,s.last_published_at,s.updated_at,s.pause_revision
 			FROM agent_settings s
 			WHERE s.agent_id=$1 FOR UPDATE OF s`, id).Scan(&settings.AgentID, &settings.PersonaVersion, &settings.Enabled, &policy, &settings.NextPostAt,
-			&settings.ScheduleDate, &settings.RemainingSlots, &settings.LastPublishedAt, &settings.UpdatedAt)
+			&settings.ScheduleDate, &settings.RemainingSlots, &settings.LastPublishedAt, &settings.UpdatedAt, &settings.PauseRevision)
 		if errors.Is(databaseError(ctx, err), app.ErrNotFound) {
 			continue
 		}

@@ -155,12 +155,40 @@ func TestExecuteSequenceAndNilProbe(t *testing.T) {
 		s.event("call")
 		return fakeSuccess(t, s)
 	}))
-	if err != nil || result.Calls != 1 || result.Published != 1 || result.Probes != 8 || s.requestID != "safe-request.1" {
+	if err != nil || result.Calls != 1 || result.CallsSucceeded != 1 || result.Published != 1 || result.Probes != 8 || s.requestID != "safe-request.1" {
 		t.Fatal(result, err)
 	}
 	want := []string{"ready", "recover", "expire", "claim", "latest", "context", "reserve", "call", "settle", "latest", "complete", "publish"}
 	if !reflect.DeepEqual(s.events, want) {
 		t.Fatal(s.events)
+	}
+}
+
+// TestExecuteSummaryCountsProviderOutcomes asserts CallsSucceeded counts only a
+// valid, non-cancelled provider outcome for success, failure and timeout.
+func TestExecuteSummaryCountsProviderOutcomes(t *testing.T) {
+	for _, mode := range []string{"success", "failure", "timeout"} {
+		t.Run(mode, func(t *testing.T) {
+			s := executeFixture(t)
+			result, err := Execute(context.Background(), s, providerFunc(func(context.Context, app.GenerationRequest) app.GenerationOutcome {
+				switch mode {
+				case "success":
+					return fakeSuccess(t, s)
+				case "failure":
+					return app.GenerationOutcome{Failure: app.GenerationTransient}
+				default:
+					return app.GenerationOutcome{Failure: app.GenerationTimeout}
+				}
+			}))
+			_ = err
+			wantSucceeded := 0
+			if mode == "success" {
+				wantSucceeded = 1
+			}
+			if result.Calls != 1 || result.CallsSucceeded != wantSucceeded {
+				t.Fatalf("%s: %+v", mode, result)
+			}
+		})
 	}
 }
 
@@ -191,13 +219,16 @@ func TestExecuteDenialsAndSafeFailures(t *testing.T) {
 			case "arbitrary_code":
 				s.contextErr = ExecutionError("secret arbitrary code")
 			}
-			_, err := Execute(context.Background(), s, providerFunc(func(context.Context, app.GenerationRequest) app.GenerationOutcome { calls++; return fakeSuccess(t, s) }))
+			result, err := Execute(context.Background(), s, providerFunc(func(context.Context, app.GenerationRequest) app.GenerationOutcome { calls++; return fakeSuccess(t, s) }))
 			wantCalls := 0
 			if strings.HasPrefix(name, "publication") {
 				wantCalls = 1
 			}
 			if calls != wantCalls {
 				t.Fatal(calls)
+			}
+			if result.CallsSucceeded != wantCalls {
+				t.Fatalf("calls_succeeded %d want %d: %+v", result.CallsSucceeded, wantCalls, result)
 			}
 			if name == "ambiguous_commit" || name == "storage" || name == "arbitrary_code" {
 				if err != ExecutionStorage || strings.Contains(err.Error(), "secret") {
@@ -240,8 +271,26 @@ func TestExecuteDurableStopsAndHistory(t *testing.T) {
 				if err == nil || err.Error() != string(failure) || result.Probes != 1 || result.Published != 0 {
 					t.Fatal(result, err)
 				}
-				if (mode == "history" || mode == "acknowledged") && result.Calls != 0 {
+				// "history" and every unacknowledged fatal outcome (including
+				// unsupported accounting) stop before any call. "acknowledged"
+				// proves the operator-retry exception: credentials and
+				// configuration failures call again after the operator retry,
+				// while unsupported accounting never has a repair ack and keeps
+				// its stop.
+				if mode == "history" && result.Calls != 0 {
 					t.Fatal("historical call")
+				}
+				if mode == "acknowledged" && failure == app.GenerationAccountingUnsupported && result.Calls != 0 {
+					t.Fatalf("accounting ack stopped: %+v", result)
+				}
+				if mode == "acknowledged" && failure != app.GenerationAccountingUnsupported && result.Calls != 1 {
+					t.Fatalf("operator retry did not call: %+v", result)
+				}
+				if mode == "outcome" && result.CallsSucceeded != 0 {
+					t.Fatalf("failed provider outcome counted as success: %+v", result)
+				}
+				if mode == "normalized" && result.CallsSucceeded != 1 {
+					t.Fatalf("valid provider outcome not counted: %+v", result)
 				}
 			})
 		}
@@ -259,6 +308,41 @@ func TestExecuteDurableStopsAndHistory(t *testing.T) {
 		if status == app.AttemptSucceeded && s.denied != 1 {
 			t.Fatal("lost payload not denied")
 		}
+	}
+}
+
+// TestExecuteOperatorRetryAcknowledgement reproduces the exact persisted retry
+// state of a failed credentials job after a trusted operator retry: the job was
+// claimed with a fresh lease availability (acknowledged via availability-after-
+// finish) with the fatal attempt still retained in history. The pass calls
+// again with a fresh reservation; repaired providers succeed and publish.
+func TestExecuteOperatorRetryAcknowledgement(t *testing.T) {
+	s := executeFixture(t)
+	finish := s.job.AvailableAt.Add(time.Second)
+	s.attempt = &app.GenerationAttempt{ID: app.NewID(), LeaseVersion: 1, Status: app.AttemptFailed,
+		ErrorCode: string(app.GenerationCredentials), FinishedAt: &finish}
+	s.job.LeaseVersion = 2
+	s.job.AvailableAt = finish.Add(time.Second)
+	want, err := app.DecodeGenerationResult([]byte(`{"decision":"publish","body":"A repaired credentials retry result."}`), s.job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := Execute(context.Background(), s, providerFunc(func(_ context.Context, req app.GenerationRequest) app.GenerationOutcome {
+		if s.attempt.Status != app.AttemptReserved {
+			t.Fatal("call before reservation")
+		}
+		s.event("call")
+		return app.GenerationOutcome{Result: want, ProviderRequestID: "retry-request.1"}
+	}))
+	if err != nil || result.Calls != 1 || result.Published != 1 || result.Retried != 0 {
+		t.Fatalf("operator retry pass: %+v %v", result, err)
+	}
+	if s.requestID != "retry-request.1" {
+		t.Fatalf("request id: %q", s.requestID)
+	}
+	wantEvents := []string{"ready", "recover", "expire", "claim", "latest", "context", "reserve", "call", "settle", "latest", "complete", "publish"}
+	if !reflect.DeepEqual(s.events, wantEvents) {
+		t.Fatalf("retry events: %v", s.events)
 	}
 }
 
@@ -305,12 +389,17 @@ func TestExecuteRenewalLossShutdownAndLateSuccess(t *testing.T) {
 				return fakeSuccess(t, s) // Deliberately ignores cancellation on return.
 			}), time.Millisecond)
 			if mode == "renewed" {
-				if err != nil || result.Published != 1 {
+				if err != nil || result.Published != 1 || result.CallsSucceeded != 1 {
 					t.Fatal(result, err)
 				}
 			} else {
 				if result.Published != 0 || s.settled.Failure != app.GenerationCancelled || s.settled.InputTokens != nil || s.settled.Result.Digest() != "" {
 					t.Fatal(result, s.settled, err)
+				}
+				// A late cancelled success or a lost lease/cleanup failure must
+				// never be counted as healthy provider evidence.
+				if result.CallsSucceeded != 0 {
+					t.Fatalf("cancelled/lost call counted as success: %+v", result)
 				}
 				if mode == "shutdown" && (err != ExecutionStopped || result.Cancelled != 1) {
 					t.Fatal(result, err)

@@ -4,9 +4,13 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
+import socket
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 
 from smoke import client
 
@@ -119,6 +123,265 @@ def verify_http(request, rows):
                 assert preview["is_generated"] == full["is_generated"]
         assert content["is_generated"] is True and content["body"] == row["body"]
     safe(request("/api/v1/feed"))
+
+
+def free_port():
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        return listener.getsockname()[1]
+
+
+def probe(port, path):
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(f"http://127.0.0.1:{port}{path}", timeout=2) as response:
+            return response.status
+    except urllib.error.HTTPError as error:
+        return error.code
+    except Exception:
+        return None
+
+
+def wait_ready(port, expected, timeout=60):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if probe(port, "/readyz") == expected:
+            return
+        time.sleep(0.2)
+    raise AssertionError(f"readiness did not become {expected}")
+
+
+def wait_sql(statement, expected="1", timeout=60):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if sql(statement) == expected:
+            return
+        time.sleep(0.25)
+    raise AssertionError("timed out waiting for a SQL fixture state")
+
+
+def wait_started(started, job_id, timeout=60):
+    """Wait for the blocked provider call, failing early with the job's reason."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if started.exists():
+            return
+        job_state = sql(f"SELECT status||':'||COALESCE(reason_code,'-') FROM generation_jobs WHERE id='{job_id}'")
+        if job_state.split(':')[0] not in ("pending", "running"):
+            raise AssertionError("blocked trigger terminal before provider call: " + job_state)
+        time.sleep(0.25)
+    raise AssertionError("blocked trigger never reached the provider")
+
+
+def admin(*args):
+    env = {key: value for key, value in os.environ.items() if key != "TOGETHER_API_KEY"}
+    result = subprocess.run([os.environ["STACKTRACE_ADMIN"], *args], env=env, text=True, capture_output=True, timeout=30)
+    assert result.returncode == 0, f"admin {' '.join(args)}: unexpected exit"
+    assert os.environ["DATABASE_URL"] not in result.stdout + result.stderr
+    return json.loads(result.stdout)
+
+
+def write_serve_control(path, mode="publish", block=False):
+    write_fixture(path, dict(mode=mode, block=block))
+
+
+def start_serve(control, started, release):
+    port = free_port()
+    env = dict(
+        os.environ,
+        WORKER_HTTP_ADDR=f"127.0.0.1:{port}",
+        STACKTRACE_SERVE_SMOKE=str(control),
+        STACKTRACE_SERVE_STARTED=str(started),
+        STACKTRACE_SERVE_RELEASE=str(release),
+        TOGETHER_API_KEY="",
+    )
+    env.pop("STACKTRACE_GENERATION_SMOKE", None)
+    log = open(state / f"serve-{port}.log", "w")
+    process = subprocess.Popen(
+        [str(state / "worker.test"), "-test.run=^TestServeSmokeHarness$", "-test.count=1", "-test.timeout=300s"],
+        env=env, text=True, stdout=log, stderr=subprocess.STDOUT,
+    )
+    return process, log, port
+
+
+def stop_serve(process, log):
+    if process.poll() is None:
+        process.send_signal(signal.SIGTERM)
+        try:
+            process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
+    log.close()
+    assert process.returncode == 0, f"serve harness exited {process.returncode}"
+
+
+def serve_publications(agent, jobs):
+    ids = ",".join(f"'{job}'" for job in jobs)
+    rows = json.loads(sql(f"""SELECT json_agg(row_to_json(p) ORDER BY trigger_kind) FROM (
+        SELECT j.id AS job_id,j.trigger_kind,j.result_post_id,j.result_reply_id,j.source_post_id,
+            j.published_attempt_id,a.output_digest,
+            COALESCE(p.body,r.body) AS body,
+            (a.job_id=j.id AND a.lease_version=j.lease_version AND a.status='succeeded'
+             AND a.decision='publish' AND a.input_tokens=100 AND a.output_tokens=20
+             AND a.reserved_tokens=132096 AND a.provider_request_id='serve-request'
+             AND COALESCE(p.author_id,r.author_id)=j.agent_id
+             AND (r.id IS NULL OR r.post_id=j.source_post_id)) AS exact_provenance
+        FROM generation_jobs j JOIN generation_attempts a ON a.id=j.published_attempt_id
+        LEFT JOIN posts p ON p.id=j.result_post_id LEFT JOIN replies r ON r.id=j.result_reply_id
+        WHERE j.status='succeeded' AND j.agent_id='{agent}' AND j.id IN ({ids})) p"""))
+    assert len(rows) == 4 and {row["trigger_kind"] for row in rows} == {"scheduled", "reply", "repost", "quote"}
+    assert all(row["exact_provenance"] and re.fullmatch(r"generation_output_v1:[0-9a-f]{64}", row["output_digest"]) for row in rows)
+    return rows
+
+
+def serve_phase():
+    fixture = json.loads(fixture_path.read_text())
+    agent = fixture["scheduled"]
+    control = state / "serve-command.json"
+    started = state / "serve-started"
+    release = state / "serve-release"
+    baseline = set(json.loads(sql("SELECT COALESCE(json_agg(id),'[]') FROM generation_jobs WHERE status='succeeded'")))
+    phase_start = sql("SELECT clock_timestamp()")
+    before_scheduled = int(sql(f"SELECT count(*) FROM generation_jobs WHERE agent_id='{agent}' AND trigger_kind='scheduled' AND status='succeeded'"))
+
+    sql(f"UPDATE agent_settings SET enabled=false WHERE agent_id<>'{agent}'")
+    # Repair the other seed's intentionally invalid fixture so bounded status reads
+    # remain valid, and give this agent a genuinely new due slot with headroom above
+    # the scheduled post it already published earlier in the run.
+    sql(f"UPDATE agent_settings SET policy=jsonb_set(policy,'{{timezone}}','\"UTC\"') WHERE agent_id<>'{agent}'")
+    sql(f"""UPDATE agent_settings SET enabled=true, policy=policy || jsonb_build_object(
+        'timezone','Etc/GMT','active_start','00:00','active_end','23:59',
+        'scheduled_min_per_day',2,'scheduled_max_per_day',2,'scheduled_post_cap_per_day',3,
+        'min_spacing_seconds',1,'response_min_delay_seconds',0,'response_max_delay_seconds',0,
+        'human_post_probability_bps',0,'reply_probability_bps',10000,'repost_probability_bps',10000,
+        'quote_probability_bps',10000,'continuation_probability_bps',0,'cooldown_seconds',1,
+        'reply_cap_per_day',20,'reply_cap_per_conversation',10,'max_agents_per_trigger',1,
+        'human_trigger_cap_per_window',50,'human_trigger_window_seconds',1,
+        'source_max_age_seconds',7200,'daily_token_budget',5000000
+    ) WHERE agent_id='{agent}';
+    UPDATE agent_settings SET schedule_date=(clock_timestamp() AT TIME ZONE (policy->>'timezone'))::date,
+        remaining_slots=1,next_post_at=clock_timestamp()+interval '1 second' WHERE agent_id='{agent}';""")
+
+    write_serve_control(control, "publish")
+    process, log, port = start_serve(control, started, release)
+    (state / f"serve-{port}.pid").write_text(str(process.pid))
+    try:
+        wait_ready(port, 200)
+
+        # The service schedules and publishes one post without any manual execute.
+        wait_sql(f"SELECT count(*) FROM generation_jobs WHERE agent_id='{agent}' AND trigger_kind='scheduled' AND status='succeeded'", str(before_scheduled + 1), timeout=120)
+        post_id = sql(f"SELECT result_post_id FROM generation_jobs WHERE agent_id='{agent}' AND trigger_kind='scheduled' AND status='succeeded' ORDER BY created_at DESC, id DESC LIMIT 1")
+
+        request, _ = client(os.environ["API_PUBLIC_ORIGIN"])
+        request("/api/v1/auth/login", "POST", dict(username="generation_smoke", password="smoke-password-123"))
+        csrf = request("/api/v1/me")["csrf_token"]
+
+        # Human reply/repost/quote triggers are also claimed and published by the
+        # service. Create each only after the previous publication settles, so the
+        # agent's own finite admission spacing is respected by real timing.
+        for kind in ("reply", "repost", "quote"):
+            time.sleep(1.1)
+            before_kind = int(sql(f"SELECT count(*) FROM generation_jobs WHERE agent_id='{agent}' AND status='succeeded' AND trigger_kind='{kind}'"))
+            if kind == "reply":
+                path, method, body = f"/api/v1/posts/{post_id}/replies", "POST", dict(body="How should the continuous worker be tested?")
+            elif kind == "repost":
+                path, method, body = f"/api/v1/posts/{post_id}/repost", "PUT", None
+            else:
+                path, method, body = "/api/v1/posts", "POST", dict(body="A continuous example for discussion.", quoted_post_id=post_id)
+            kwargs = dict(csrf=csrf, key=f"serve-{kind}", expected=200 if kind == "repost" else 201)
+            request(path, method, body, **kwargs)
+            wait_sql(f"SELECT count(*) FROM generation_jobs WHERE agent_id='{agent}' AND status='succeeded' AND trigger_kind='{kind}'", str(before_kind + 1), timeout=90)
+        current = set(json.loads(sql(f"SELECT COALESCE(json_agg(id),'[]') FROM generation_jobs WHERE status='succeeded' AND agent_id='{agent}'")))
+        new_jobs = sorted(current - baseline)
+        assert len(new_jobs) == 4, "autonomous service publication count mismatch"
+        rows = serve_publications(agent, new_jobs)
+        verify_http(request, rows)
+
+        # Bounded operator reports from the separately built admin CLI.
+        status = admin("status")
+        assert set(status) == {"agents", "queue", "today_usage"} and status["agents"]["enabled"] == 1
+        listed = admin("job", "list", "--agent", agent, "--limit", "3")
+        assert len(listed["jobs"]) <= 3
+        assert admin("job", "inspect", rows[0]["job_id"])["complete"] is True
+        assert admin("usage")["charged_tokens"] >= 4 * 120
+
+        # Pause during a blocked call: the admitted result must not publish. This
+        # runs before the expensive unknown-accounting outcomes so the fixed fleet
+        # token budget can still admit the later conservative-usage evidence.
+        write_serve_control(control, "publish", block=True)
+        started.unlink(missing_ok=True)
+        release.unlink(missing_ok=True)
+        time.sleep(1.1)
+        request(f"/api/v1/posts/{post_id}/replies", "POST", dict(body="Pause must stop publication."), csrf, key="serve-pause", expected=201)
+        pause_job = sql(f"SELECT id FROM generation_jobs WHERE agent_id='{agent}' AND trigger_kind='reply' ORDER BY created_at DESC, id DESC LIMIT 1")
+        wait_started(started, pause_job, timeout=60)
+        assert admin("agent", "pause", agent)["action"] == "agent pause"
+        write_serve_control(control, "publish")
+        release.write_text("release")
+        wait_sql(f"SELECT (status NOT IN ('pending','running'))::text FROM generation_jobs WHERE id='{pause_job}'", "true", timeout=120)
+        assert sql(f"SELECT count(*) FROM generation_jobs WHERE id='{pause_job}' AND (status='succeeded' OR result_reply_id IS NOT NULL OR result_post_id IS NOT NULL)") == "0"
+        assert admin("agent", "resume", agent)["action"] == "agent resume"
+        release.unlink(missing_ok=True)
+
+        # Provider degradation: unready, HTTP stays usable, then recovery on a
+        # later real success. The timeout settles as conservative unknown usage.
+        write_serve_control(control, "timeout")
+        time.sleep(1.1)
+        request(f"/api/v1/posts/{post_id}/replies", "POST", dict(body="Is the API usable while degraded?"), csrf, key="serve-degraded", expected=201)
+        wait_sql("SELECT count(*) FROM generation_attempts WHERE error_code='provider_timeout' AND provider_request_id IS NULL AND status='unknown'", "1", timeout=120)
+        wait_ready(port, 503, timeout=60)
+        healthy = request("/api/v1/posts", "POST", dict(body="HTTP remains usable during provider failure."), csrf, key="serve-healthy", expected=201)
+        assert request(f"/api/v1/posts/{healthy['id']}")["body"] == healthy["body"]
+        write_serve_control(control, "publish")
+        wait_ready(port, 200, timeout=120)
+
+        # Remove the source reply during a blocked call: nothing may publish. This is
+        # the last spending action so the fleet budget cannot starve a needed retry.
+        write_serve_control(control, "publish", block=True)
+        started.unlink(missing_ok=True)
+        release.unlink(missing_ok=True)
+        time.sleep(1.1)
+        removed_reply = request(f"/api/v1/posts/{post_id}/replies", "POST", dict(body="Remove this reply while generating."), csrf, key="serve-remove", expected=201)["reply"]["id"]
+        remove_job = sql(f"SELECT id FROM generation_jobs WHERE agent_id='{agent}' AND source_reply_id='{removed_reply}' ORDER BY created_at DESC, id DESC LIMIT 1")
+        wait_started(started, remove_job, timeout=60)
+        assert admin("reply", "remove", removed_reply)["removed"] is True
+        write_serve_control(control, "publish")
+        release.write_text("release")
+        wait_sql(f"SELECT (status NOT IN ('pending','running'))::text FROM generation_jobs WHERE id='{remove_job}'", "true", timeout=120)
+        assert sql(f"SELECT count(*) FROM generation_jobs WHERE id='{remove_job}' AND (status='succeeded' OR result_reply_id IS NOT NULL OR result_post_id IS NOT NULL)") == "0"
+        release.unlink(missing_ok=True)
+
+        # Unknown accounting (timeouts always, and cancellation when it races)
+        # is charged the full reservation, never understated.
+        unknown = int(sql("SELECT count(*) FROM generation_attempts WHERE status='unknown' AND reserved_tokens=132096 AND input_tokens IS NULL AND output_tokens IS NULL"))
+        assert unknown >= 2, f"expected execute + service unknown timeouts, got {unknown}"
+        assert admin("usage")["charged_tokens"] >= 2 * 132096
+
+        # Pause, settle, then a graceful stop/restart must not replay durable work.
+        assert admin("agent", "pause", agent)["action"] == "agent pause"
+        time.sleep(6)
+        leftover = sql(f"SELECT COALESCE(string_agg(trigger_kind||':'||status||':'||COALESCE(reason_code,'-'),'|'),'') FROM generation_jobs WHERE agent_id='{agent}' AND created_at >= '{phase_start}'::timestamptz AND status IN ('pending','retry_wait','running')")
+        assert leftover == "", "leftover non-terminal jobs before restart: " + leftover
+        before = execution_snapshot()
+        stop_serve(process, log)
+        process = log = None
+        process, log, port = start_serve(control, started, release)
+        wait_ready(port, 200)
+        time.sleep(6)
+        assert execution_snapshot() == before, "restart replayed or duplicated durable state"
+        print("Continuous service smoke passed: autonomous publications, admin controls, degradation recovery, conservative charging, pause/remove barriers and restart durability.")
+    finally:
+        if process is not None and process.poll() is None:
+            process.send_signal(signal.SIGTERM)
+            try:
+                process.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=10)
+        if log is not None:
+            log.close()
+        sql(f"UPDATE agent_settings SET enabled=false WHERE agent_id='{agent}'")
 
 
 fixture_path = state / "generation-fixture.json"
@@ -288,5 +551,7 @@ elif phase == "execute-verify":
     assert execution_snapshot() == before
     assert sql("SELECT count(*) FROM agent_settings WHERE enabled") == "0"
     print("Execution verified after API restart: persisted provenance, no extra calls; disposable agents disabled.")
+elif phase == "serve":
+    serve_phase()
 else:
     raise AssertionError("Unknown generation smoke phase")

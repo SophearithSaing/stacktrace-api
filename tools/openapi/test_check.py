@@ -183,15 +183,52 @@ class CheckerTest(unittest.TestCase):
         value["components"].update(
             {
                 "examples": {"bad": {"value": {"id": 7}}},
-                "requestBodies": {"body": {"$ref": "#/components/requestBodies/bodyAgain"}, "bodyAgain": {"content": {"application/json": {"schema": {"$ref": "#/x-schemas/nullable"}, "examples": {"bad": {"$ref": "#/components/examples/bad"}}}}}},
-                "responses": {"response": {"$ref": "#/components/responses/responseAgain"}, "responseAgain": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/x-schemas/nullable"}, "examples": {"bad": {"$ref": "#/components/examples/bad"}}}}}},
-                "pathItems": {"feed": {"parameters": [{"name": "accountID", "in": "path", "required": True, "schema": {"type": "string"}}], "get": {"operationId": "accountFeed", "requestBody": {"$ref": "#/components/requestBodies/body"}, "responses": {"200": {"$ref": "#/components/responses/response"}}}}},
+                "requestBodies": {
+                    "body": {"$ref": "#/components/requestBodies/bodyAgain"},
+                    "bodyAgain": {
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/x-schemas/nullable"},
+                                "examples": {"bad": {"$ref": "#/components/examples/bad"}},
+                            }
+                        }
+                    },
+                },
+                "responses": {
+                    "response": {"$ref": "#/components/responses/responseAgain"},
+                    "responseAgain": {
+                        "description": "ok",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/x-schemas/nullable"},
+                                "examples": {"bad": {"$ref": "#/components/examples/bad"}},
+                            }
+                        },
+                    },
+                },
+                "pathItems": {
+                    "feed": {
+                        "parameters": [
+                            {
+                                "name": "accountID",
+                                "in": "path",
+                                "required": True,
+                                "schema": {"type": "string"},
+                            }
+                        ],
+                        "get": {
+                            "operationId": "accountFeed",
+                            "requestBody": {"$ref": "#/components/requestBodies/body"},
+                            "responses": {"200": {"$ref": "#/components/responses/response"}},
+                        },
+                    }
+                },
             }
         )
         value["x-schemas"] = {"nullable": {"$ref": "#/components/schemas/Nullable"}}
         value["paths"][FEED_PATH] = {"$ref": "#/components/pathItems/feed"}
         findings = self.findings(value)
-        self.assertEqual(sum("example bad" in finding for finding in findings), 2)
+        self.assertEqual(sum("example bad" in finding for finding in findings), 6)
 
     def test_reference_cycles_report_diagnostics_without_recursion(self):
         """test_reference_cycles_report_diagnostics_without_recursion handles cyclic objects."""

@@ -16,6 +16,9 @@ try:
     import yaml
     from jsonschema import Draft202012Validator, FormatChecker
     from openapi_spec_validator import OpenAPIV31SpecValidator
+    from referencing import Registry, Resource
+    from referencing.exceptions import NoSuchResource
+    from referencing.jsonschema import DRAFT202012
 except ImportError:
     print("OpenAPI dependencies are unavailable; run make openapi-setup first.")
     raise SystemExit(2)
@@ -25,6 +28,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SPEC_PATH = ROOT / "docs/openapi.yaml"
 SERVER_PATH = ROOT / "internal/api/server.go"
 OPERATION_KEYS = {"get", "put", "post", "delete", "options", "head", "patch", "trace"}
+REFERENCE_KEYS = {"$ref", "$dynamicRef"}
 
 
 def pointer(document: Any, reference: str) -> Any:
@@ -49,7 +53,7 @@ def references(document: Any, value: Any, location: str = "$") -> list[str]:
     if isinstance(value, dict):
         for key, child in value.items():
             child_location = f"{location}.{key}"
-            if key == "$ref" and isinstance(child, str):
+            if key in REFERENCE_KEYS and isinstance(child, str):
                 if not child.startswith("#/"):
                     findings.append(f"{child_location}: external reference {child!r} is not allowed")
                 else:
@@ -124,7 +128,15 @@ def schema_validator(document: dict[str, Any], schema: Any) -> Draft202012Valida
     """schema_validator creates a format-aware validator with document-local references."""
     wrapper = dict(document)
     wrapper.update({"$ref": "#/schema", "schema": schema})
-    return Draft202012Validator(wrapper, format_checker=FormatChecker())
+
+    def reject_retrieve(uri: str) -> Resource[Any]:
+        """reject_retrieve prevents schema validation from retrieving remote resources."""
+        raise NoSuchResource(ref=uri)
+
+    registry = Registry(retrieve=reject_retrieve).with_resource(
+        "", Resource.from_contents(wrapper, default_specification=DRAFT202012)
+    )
+    return Draft202012Validator(wrapper, registry=registry, format_checker=FormatChecker())
 
 
 def validate_examples(document: dict[str, Any]) -> list[str]:
@@ -132,7 +144,7 @@ def validate_examples(document: dict[str, Any]) -> list[str]:
     findings: list[str] = []
 
     def check_examples(schema: Any, examples: Any, location: str) -> None:
-        if not isinstance(examples, list):
+        if schema is None or not isinstance(examples, list):
             return
         try:
             validator = schema_validator(document, schema)
@@ -140,7 +152,11 @@ def validate_examples(document: dict[str, Any]) -> list[str]:
             findings.append(f"{location}: invalid schema: {error}")
             return
         for index, example in enumerate(examples):
-            error = next(validator.iter_errors(example), None)
+            try:
+                error = next(validator.iter_errors(example), None)
+            except Exception as error:
+                findings.append(f"{location}[{index}]: cannot validate example: {error}")
+                continue
             if error:
                 findings.append(f"{location}[{index}]: {error.message}")
 
@@ -148,12 +164,32 @@ def validate_examples(document: dict[str, Any]) -> list[str]:
         if isinstance(value, dict):
             if "examples" in value:
                 check_examples(value, value["examples"], location)
-            for key, child in value.items():
-                if key != "examples":
-                    schema_nodes(child, f"{location}.{key}")
-        elif isinstance(value, list):
-            for index, child in enumerate(value):
-                schema_nodes(child, f"{location}[{index}]")
+            for key in ("$defs", "definitions", "dependentSchemas", "patternProperties", "properties"):
+                children = value.get(key)
+                if isinstance(children, dict):
+                    for name, child in children.items():
+                        schema_nodes(child, f"{location}.{key}.{name}")
+            for key in ("additionalProperties", "additionalItems", "contains", "contentSchema", "else", "if", "items", "not", "propertyNames", "then", "unevaluatedItems", "unevaluatedProperties"):
+                if key in value:
+                    schema_nodes(value[key], f"{location}.{key}")
+            for key in ("allOf", "anyOf", "oneOf", "prefixItems"):
+                children = value.get(key)
+                if isinstance(children, list):
+                    for index, child in enumerate(children):
+                        schema_nodes(child, f"{location}.{key}[{index}]")
+
+    def parameter_examples(parameter: Any, location: str) -> None:
+        parameter = resolve_object(document, parameter, location, "parameter", findings)
+        if parameter is not None and "schema" in parameter:
+            name = parameter.get("name")
+            if isinstance(name, str):
+                location = f"{location} {name}"
+            schema_nodes(parameter["schema"], location + " schema")
+
+    def header_examples(header: Any, location: str) -> None:
+        header = resolve_object(document, header, location, "header", findings)
+        if header is not None and "schema" in header:
+            schema_nodes(header["schema"], location + " schema")
 
     def media_examples(media: Any, location: str) -> None:
         media = resolve_object(document, media, location, "media type", findings)
@@ -171,30 +207,51 @@ def validate_examples(document: dict[str, Any]) -> list[str]:
                 if example is not None and "value" in example:
                     check_examples(schema, [example["value"]], location + f" example {key}")
 
-    for name, schema in document.get("components", {}).get("schemas", {}).items():
+    def request_body_examples(request_body: Any, location: str) -> None:
+        request_body = resolve_object(document, request_body, location, "request body", findings)
+        if request_body is not None:
+            for kind, media in request_body.get("content", {}).items():
+                media_examples(media, f"{location} {kind}")
+
+    def response_examples(response: Any, location: str) -> None:
+        response = resolve_object(document, response, location, "response", findings)
+        if response is not None:
+            for name, header in response.get("headers", {}).items():
+                header_examples(header, f"{location} header {name}")
+            for kind, media in response.get("content", {}).items():
+                media_examples(media, f"{location} {kind}")
+
+    components = document.get("components", {})
+    for name, schema in components.get("schemas", {}).items():
         schema_nodes(schema, f"schema {name}")
+    for name, parameter in components.get("parameters", {}).items():
+        parameter_examples(parameter, f"component parameter {name}")
+    for name, header in components.get("headers", {}).items():
+        header_examples(header, f"component header {name}")
+    for name, request_body in components.get("requestBodies", {}).items():
+        request_body_examples(request_body, f"component request body {name}")
+    for name, response in components.get("responses", {}).items():
+        response_examples(response, f"component response {name}")
 
     for path, item in document.get("paths", {}).items():
         item = resolve_object(document, item, f"path {path}", "path item", findings)
         if item is None:
             continue
+        for parameter in item.get("parameters", []):
+            parameter_examples(parameter, f"path {path} parameter")
         for method, operation in item.items():
             if method not in OPERATION_KEYS:
                 continue
             operation = resolve_object(document, operation, f"{method.upper()} {path}", "operation", findings)
             if operation is None:
                 continue
+            for parameter in operation.get("parameters", []):
+                parameter_examples(parameter, f"{method.upper()} {path} parameter")
             request_body = operation.get("requestBody")
             if request_body is not None:
-                request_body = resolve_object(document, request_body, f"{method.upper()} {path} request", "request body", findings)
-                if request_body is not None:
-                    for kind, media in request_body.get("content", {}).items():
-                        media_examples(media, f"{method.upper()} {path} request {kind}")
+                request_body_examples(request_body, f"{method.upper()} {path} request")
             for status, response in operation.get("responses", {}).items():
-                response = resolve_object(document, response, f"{method.upper()} {path} response {status}", "response", findings)
-                if response is not None:
-                    for kind, media in response.get("content", {}).items():
-                        media_examples(media, f"{method.upper()} {path} response {status} {kind}")
+                response_examples(response, f"{method.upper()} {path} response {status}")
     return findings
 
 
@@ -228,11 +285,22 @@ def source_routes(server_source: str) -> tuple[set[tuple[str, str]], list[str]]:
     """source_routes reads explicit s.mux method/path registrations from server source."""
     routes: set[tuple[str, str]] = set()
     findings: list[str] = []
-    for method, path in re.findall(r's\.mux\.HandleFunc\("([^\s",/]+) ([^"]+)"', server_source):
+    for method, path in re.findall(r's\.mux\.HandleFunc\("([^\s",/]+)\s+([^"]+)"', server_source):
         if method == "GET" and path == "/api/v1/accounts/{accountID}/{resource}":
             path = "/api/v1/accounts/{accountID}/feed"
         routes.add((method, path))
     return routes, findings
+
+
+def error_location(error: Any) -> str:
+    """error_location formats a validation error's absolute document path."""
+    location = "$"
+    for token in error.absolute_path:
+        if isinstance(token, int):
+            location += f"[{token}]"
+        else:
+            location += f".{token}"
+    return location
 
 
 def check(document: dict[str, Any], server_source: str) -> list[str]:
@@ -248,7 +316,7 @@ def check(document: dict[str, Any], server_source: str) -> list[str]:
     except Exception as error:
         return [f"strict document: validation failed: {error}"]
     if structural_errors:
-        return [f"strict document: {error.message}" for error in structural_errors]
+        return [f"strict document at {error_location(error)}: {error.message}" for error in structural_errors]
     findings.extend(validate_examples(document))
     documented, operation_findings = operations(document)
     source, source_findings = source_routes(server_source)

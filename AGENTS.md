@@ -82,3 +82,5 @@ abstractions and infrastructure for features that have not been requested.
   permissions; verify execution when changing policies and preserve unrelated
   configuration.
 - Ordinary tests and smoke checks must not make paid provider calls.
+- When changing `docs/openapi.yaml` or explicit API registrations, run the optional
+  offline `make openapi-check` and update affected contract fixtures.

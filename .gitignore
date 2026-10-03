@@ -10,3 +10,5 @@ dev-logs/
 /coverage.html
 *.test
 /tools/diagrams/node_modules/
+/tools/openapi/.venv/
+/tools/openapi/__pycache__/

@@ -3,6 +3,7 @@ package app
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSearchQueryNormalize(t *testing.T) {
@@ -23,6 +24,13 @@ func TestSearchQueryNormalize(t *testing.T) {
 	}
 	if _, err := (SearchQuery{Text: "valid", Window: SearchWindow{Position: &SearchPosition{ID: NewID()}}}).Normalize(); err == nil {
 		t.Fatal("accepted position without ceiling")
+	}
+	if _, err := (SearchQuery{Text: string([]byte{0xff, 0xff})}).Normalize(); err == nil {
+		t.Fatal("accepted invalid utf8")
+	}
+	ceiling := time.Now().UTC()
+	if _, err := (SearchQuery{Text: "valid", Window: SearchWindow{InitialCeiling: ceiling, Position: &SearchPosition{ID: NewID(), CreatedAt: ceiling.Add(time.Second)}}}).Normalize(); err == nil {
+		t.Fatal("accepted position after ceiling")
 	}
 }
 

@@ -3,11 +3,15 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/SophearithSaing/stacktrace-api/internal/api"
 	"github.com/SophearithSaing/stacktrace-api/internal/app"
 )
 
@@ -97,11 +101,96 @@ func TestSearchHTTPSemanticsAndCanonicalProjection(t *testing.T) {
 	}
 	detail := decodeHTTPPost(t, contentRequest(handler, "GET", "/posts/"+string(body.ID), "", "", &viewer, "192.0.2.215"), http.StatusOK)
 	page = readHTTPSearch(t, handler, "/search/posts?q=jsonb_path_ops", &viewer)
-	if len(page.Items) != 1 || page.Items[0].Post.ID != detail.ID || page.Items[0].Post.Counts.Replies != detail.Counts.Replies || page.Items[0].Post.Counts.Reposts != detail.Counts.Reposts || page.Items[0].Post.Viewer == nil {
+	if len(page.Items) != 1 || page.Items[0].Post.ID != detail.ID || page.Items[0].Post.Counts.Replies != detail.Counts.Replies || page.Items[0].Post.Counts.Reposts != detail.Counts.Reposts || page.Items[0].Post.Viewer == nil || !page.Items[0].Post.Viewer.Reposted {
 		t.Fatalf("canonical projection=%+v detail=%+v", page, detail)
 	}
 	feedExec(t, store, `UPDATE posts SET deleted_at=statement_timestamp() WHERE id=$1`, body.ID)
 	if page := readHTTPSearch(t, handler, "/search/posts?q=jsonb_path_ops", nil); len(page.Items) != 0 {
 		t.Fatalf("deleted search=%+v", page)
+	}
+}
+
+func TestSearchHTTPPaginationCursorContracts(t *testing.T) {
+	store, handler := identityHandler(t)
+	viewer := registerBrowser(t, handler, "search_cursor_viewer", "192.0.2.216")
+	other := registerBrowser(t, handler, "search_cursor_other", "192.0.2.217")
+	session := app.SessionHash(viewer.cookie.Value)
+	first := feedPost(t, store, session, "search-cursor-first", "cursor marker")
+	second := feedPost(t, store, session, "search-cursor-second", "cursor marker")
+	third := feedPost(t, store, session, "search-cursor-third", "cursor marker")
+	tie := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	feedExec(t, store, `UPDATE posts SET created_at=$1 WHERE id IN ($2,$3,$4)`, tie, first.ID, second.ID, third.ID)
+	page := readHTTPSearch(t, handler, "/search/posts?q=cursor+marker&limit=1", &viewer)
+	if len(page.Items) != 1 || page.NextCursor == nil {
+		t.Fatalf("first page=%+v", page)
+	}
+	continued := readHTTPSearch(t, handler, "/search/posts?q="+url.QueryEscape("  cursor marker  ")+"&limit=2&cursor="+url.QueryEscape(*page.NextCursor), &viewer)
+	if len(continued.Items) != 2 || continued.NextCursor != nil {
+		t.Fatalf("changed limit continuation=%+v", continued)
+	}
+	seen := map[app.ID]bool{page.Items[0].Post.ID: true}
+	for _, item := range continued.Items {
+		if seen[item.Post.ID] {
+			t.Fatalf("duplicate tie result=%+v", item)
+		}
+		seen[item.Post.ID] = true
+	}
+	if len(seen) != 3 {
+		t.Fatalf("tie pagination missing results=%v", seen)
+	}
+	feedHTTPError(t, handler, "/search/posts?q=other+marker&cursor="+url.QueryEscape(*page.NextCursor), &viewer, http.StatusBadRequest, "invalid_cursor")
+	feedHTTPError(t, handler, "/search/posts?q=cursor+marker&cursor="+url.QueryEscape(*page.NextCursor), &other, http.StatusBadRequest, "invalid_cursor")
+	feedHTTPError(t, handler, "/search/posts?q=cursor+marker&cursor="+url.QueryEscape(*page.NextCursor), nil, http.StatusBadRequest, "invalid_cursor")
+
+	anonymous := readHTTPSearch(t, handler, "/search/posts?q=cursor+marker&limit=1", nil)
+	if anonymous.NextCursor == nil {
+		t.Fatal("anonymous first page has no cursor")
+	}
+	feedHTTPError(t, handler, "/search/posts?q=cursor+marker&cursor="+url.QueryEscape(*anonymous.NextCursor), &viewer, http.StatusBadRequest, "invalid_cursor")
+
+	time.Sleep(5 * time.Millisecond)
+	later := feedPost(t, store, session, "search-cursor-later", "cursor marker")
+	continued = readHTTPSearch(t, handler, "/search/posts?q=cursor+marker&cursor="+url.QueryEscape(*page.NextCursor), &viewer)
+	for _, item := range continued.Items {
+		if item.Post.ID == later.ID {
+			t.Fatalf("continuation crossed original ceiling=%+v", continued)
+		}
+	}
+	fresh := readHTTPSearch(t, handler, "/search/posts?q=cursor+marker&limit=20", &viewer)
+	foundLater := false
+	for _, item := range fresh.Items {
+		foundLater = foundLater || item.Post.ID == later.ID
+	}
+	if !foundLater {
+		t.Fatalf("fresh read omitted later post=%+v", fresh)
+	}
+}
+
+func TestSearchHTTPGeneratedQuoteProjection(t *testing.T) {
+	store, job, attempt, output := publicationFixture(t, app.OutputQuote, "generated discovery marker")
+	published, err := store.PublishGeneration(context.Background(), job.ID, job.LeaseVersion, attempt.ID, output)
+	if err != nil || published.ResultPostID == nil {
+		t.Fatalf("publish generated quote=%+v, %v", published, err)
+	}
+	handler := api.NewHandler(store, []string{testOrigin}, []byte(strings.Repeat("k", 32)), []byte(strings.Repeat("c", 32)), false, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	viewer := registerBrowser(t, handler, "search_generated_viewer", "192.0.2.218")
+	if _, err := store.SetRepost(context.Background(), app.SessionHash(viewer.cookie.Value), *published.ResultPostID, true); err != nil {
+		t.Fatal(err)
+	}
+	page := readHTTPSearch(t, handler, "/search/posts?q=generated+discovery+marker", &viewer)
+	if len(page.Items) != 1 || page.Items[0].Post.ID != *published.ResultPostID || page.Items[0].Post.Viewer == nil || !page.Items[0].Post.Viewer.Reposted || page.Items[0].Post.Quote == nil {
+		t.Fatalf("generated search projection=%+v", page)
+	}
+	if _, leaked := page.Items[0].Post.Quote["is_generated"]; leaked {
+		t.Fatalf("quote leaked generated provenance=%s", mustJSON(page.Items[0].Post.Quote))
+	}
+	response := contentRequest(handler, "GET", "/search/posts?q=generated+discovery+marker", "", "", &viewer, "192.0.2.218")
+	if !strings.Contains(response.Body.String(), `"is_generated":true`) || strings.Contains(response.Body.String(), "generation_job") || strings.Contains(response.Body.String(), "generation_attempt") {
+		t.Fatalf("search leaked private generation data=%s", response.Body.String())
+	}
+	detail := decodeHTTPPost(t, contentRequest(handler, "GET", "/posts/"+string(*published.ResultPostID), "", "", &viewer, "192.0.2.218"), http.StatusOK)
+	item := page.Items[0].Post
+	if item.Counts.Replies != detail.Counts.Replies || item.Counts.Reposts != detail.Counts.Reposts || item.Counts.ReactionsTotal != detail.Counts.ReactionsTotal || item.Body != detail.Body {
+		t.Fatalf("generated canonical counts=%+v detail=%+v", item, detail)
 	}
 }

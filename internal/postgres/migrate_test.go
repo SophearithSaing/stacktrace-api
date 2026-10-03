@@ -250,7 +250,7 @@ func TestMigrateUpgradeToDiscoverySearchIndex(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, `SELECT indexdef FROM pg_indexes WHERE schemaname=current_schema() AND indexname='posts_visible_body_search_idx'`).Scan(&definition); err != nil || !strings.Contains(definition, "USING gin") || !strings.Contains(definition, "to_tsvector('simple'::regconfig, body)") || !strings.Contains(definition, "WHERE (deleted_at IS NULL)") {
 		t.Fatalf("search index=%q err=%v", definition, err)
 	}
-	if err := store.db.QueryRowContext(ctx, `SELECT am.amname FROM pg_class c JOIN pg_am am ON am.oid=c.relam WHERE c.relname='posts_visible_body_search_idx'`).Scan(&method); err != nil || method != "gin" {
+	if err := store.db.QueryRowContext(ctx, `SELECT am.amname FROM pg_class c JOIN pg_am am ON am.oid=c.relam WHERE c.oid='posts_visible_body_search_idx'::regclass`).Scan(&method); err != nil || method != "gin" {
 		t.Fatalf("index method=%q err=%v", method, err)
 	}
 	if err := store.db.QueryRowContext(ctx, `SELECT body FROM posts WHERE id='20000000-0000-0000-0000-000000000009'`).Scan(&body); err != nil || body != "retained searchable post" {
@@ -260,7 +260,6 @@ func TestMigrateUpgradeToDiscoverySearchIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
 	for index, want := range checksums {
 		if !rows.Next() {
 			t.Fatalf("missing upgraded checksum %d", index+1)
@@ -270,6 +269,10 @@ func TestMigrateUpgradeToDiscoverySearchIndex(t *testing.T) {
 			t.Fatalf("checksum %d=%q want=%q err=%v", index+1, got, want, err)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	rows.Close()
 	if err := store.Ready(ctx); err != nil {
 		t.Fatalf("ready after upgrade: %v", err)
 	}

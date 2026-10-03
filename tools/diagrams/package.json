@@ -2,9 +2,14 @@
   "name": "stacktrace-diagram-tools",
   "private": true,
   "version": "1.0.0",
-  "engines": { "node": ">=26" },
+  "engines": {
+    "node": ">=26"
+  },
   "type": "module",
-  "scripts": { "check": "node check.js", "test": "node --test check.test.js" },
+  "scripts": {
+    "check": "node check.js",
+    "test": "node --test check.test.js"
+  },
   "dependencies": {
     "@dbml/core": "10.2.0",
     "jsdom": "30.1.1",

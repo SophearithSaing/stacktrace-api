@@ -75,12 +75,18 @@ func TestTrendsWindowsAndOrdering(t *testing.T) {
 	previousFalling := feedPost(t, store, session, "trend-falling-previous", "#falling")
 	previousFallingTwo := feedPost(t, store, session, "trend-falling-previous-two", "#falling")
 	currentNew := feedPost(t, store, session, "trend-new-current", "#newtag")
+	quotedSource := feedPost(t, store, session, "trend-quoted-source", "#sourceonly")
+	quote := feedPost(t, store, session, "trend-quote-current", "#quoteown")
 	deleted := feedPost(t, store, session, "trend-deleted", "#deletedtag")
-	feedExec(t, store, `UPDATE posts SET created_at=statement_timestamp()-interval '1 hour' WHERE id IN ($1,$2,$3,$4)`, currentRising.ID, currentRisingTwo.ID, currentFalling.ID, currentNew.ID)
-	feedExec(t, store, `UPDATE posts SET created_at=statement_timestamp()-interval '25 hours' WHERE id IN ($1,$2,$3)`, previousRising.ID, previousFalling.ID, previousFallingTwo.ID)
+	feedExec(t, store, `UPDATE posts SET quoted_post_id=$1 WHERE id=$2`, quotedSource.ID, quote.ID)
+	if _, err := store.SetRepost(context.Background(), session, quote.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	feedExec(t, store, `UPDATE posts SET created_at=statement_timestamp()-interval '1 hour' WHERE id IN ($1,$2,$3,$4,$5)`, currentRising.ID, currentRisingTwo.ID, currentFalling.ID, currentNew.ID, quote.ID)
+	feedExec(t, store, `UPDATE posts SET created_at=statement_timestamp()-interval '25 hours' WHERE id IN ($1,$2,$3,$4)`, previousRising.ID, previousFalling.ID, previousFallingTwo.ID, quotedSource.ID)
 	feedExec(t, store, `UPDATE posts SET deleted_at=statement_timestamp() WHERE id=$1`, deleted.ID)
 	trends, err := store.Trends(context.Background(), app.TrendQuery{Limit: 6})
-	if err != nil || len(trends) != 3 || trends[0].Slug != "rising" || trends[0].PostCount != 2 || trends[0].PreviousPostCount != 1 || trends[0].ChangePercent == nil || *trends[0].ChangePercent != 100 || trends[1].Slug != "falling" || trends[1].PostCount != 1 || trends[1].PreviousPostCount != 2 || trends[1].ChangePercent == nil || *trends[1].ChangePercent != -50 || trends[2].Slug != "newtag" || trends[2].ChangePercent != nil {
+	if err != nil || len(trends) != 4 || trends[0].Slug != "rising" || trends[0].PostCount != 2 || trends[0].PreviousPostCount != 1 || trends[0].ChangePercent == nil || *trends[0].ChangePercent != 100 || trends[1].Slug != "falling" || trends[1].PostCount != 1 || trends[1].PreviousPostCount != 2 || trends[1].ChangePercent == nil || *trends[1].ChangePercent != -50 || trends[2].Slug != "newtag" || trends[2].ChangePercent != nil || trends[3].Slug != "quoteown" || trends[3].PostCount != 1 || trends[3].PreviousPostCount != 0 || trends[3].ChangePercent != nil {
 		t.Fatalf("trends=%#v, %v", trends, err)
 	}
 }

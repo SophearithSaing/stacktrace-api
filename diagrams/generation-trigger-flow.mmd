@@ -4,7 +4,7 @@ sequenceDiagram
     participant API as Public API
     participant Store as postgres.Store
     participant DB as PostgreSQL
-    participant Loop as Worker serve loop
+    participant WorkerLoop as Worker serve loop
     participant Exec as worker.Execute
     participant LLM as Together AI
 
@@ -30,15 +30,15 @@ sequenceDiagram
         Store->>DB: Insert repost and eligible jobs in one transaction
         API-->>Human: 200 Updated post
     else Worker schedule trigger
-        Loop->>Store: ScheduleGeneration
+        WorkerLoop->>Store: ScheduleGeneration
         Store->>DB: Expire a bounded stale-job batch
         Store->>DB: Advance due agent schedules transactionally
         Store->>DB: Insert due scheduled post jobs
     end
 
-    Note over Human,Loop: HTTP requests finish after the durable database commit; generation is asynchronous
+    Note over Human,WorkerLoop: HTTP requests finish after the durable database commit, generation is asynchronous
 
-    Loop->>Exec: Start bounded execution pass
+    WorkerLoop->>Exec: Start bounded execution pass
     Exec->>Store: Ready
     Store->>DB: Verify database and migration state
     Exec->>Store: RecoverGenerationAttempts
@@ -94,4 +94,4 @@ sequenceDiagram
         API-->>Human: 204 or updated post
     end
 
-    Loop->>Loop: Wait five seconds after success<br/>or back off thirty seconds after transient failure
+    WorkerLoop->>WorkerLoop: Wait five seconds after success<br/>or back off thirty seconds after transient failure

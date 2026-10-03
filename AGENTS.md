@@ -59,6 +59,9 @@ abstractions and infrastructure for features that have not been requested.
   requested implementation slice and mark work complete only after verification.
 - Keep tests alongside the behavior they verify. Test meaningful contracts and
   failure/concurrency cases; avoid tests that merely repeat implementation details.
+- Maintain only diagrams affected by a route, schema, process, or generation change;
+  source code and migrations remain authoritative. Run diagram-only checks for
+  diagram changes, not Go/PG/smoke/runner suites. Render only for layout review.
 - Run `make check` directly for full verification. It runs build, vet, normal
   tests, and race tests with disposable real PostgreSQL and caching disabled.
 - Use `make test TEST_ARGS='-run TestName -v'` for focused verification. Tests

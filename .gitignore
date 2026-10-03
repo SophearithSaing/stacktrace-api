@@ -9,3 +9,4 @@ dev-logs/
 /coverage.out
 /coverage.html
 *.test
+/tools/diagrams/node_modules/

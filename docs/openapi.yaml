@@ -1107,7 +1107,7 @@ components:
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/ErrorWithFields'
+            $ref: '#/components/schemas/Error'
     Unauthenticated:
       description: error.code is unauthenticated.
       content:
@@ -1897,20 +1897,12 @@ components:
               - method_not_allowed
             message:
               type: string
+            fields:
+              type: object
+              additionalProperties:
+                type: string
         request_id:
           type: string
-    ErrorWithFields:
-      allOf:
-      - $ref: '#/components/schemas/Error'
-      - type: object
-        properties:
-          error:
-            type: object
-            properties:
-              fields:
-                type: object
-                additionalProperties:
-                  type: string
       examples:
       - error:
           code: validation_failed

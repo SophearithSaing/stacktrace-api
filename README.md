@@ -204,6 +204,8 @@ response, pagination, retry, and deletion contract is in
 
 ## Discovery
 
+All discovery routes are under `/api/v1`.
+
 `GET /search/posts?q=TERM[&limit=1-20&cursor=TOKEN]` returns newest public
 canonical posts (default 4) with plain-text excerpts. Body matching uses PostgreSQL
 simple web-search tokens, phrases, `OR`, and negation; author name/handle matching

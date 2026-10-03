@@ -227,6 +227,12 @@ func TestDiscoveryCrossProjectionContract(t *testing.T) {
 		}
 	}
 	detail := decodeHTTPPost(t, contentRequest(handler, "GET", "/posts/"+string(post.ID), "", "", &viewer, "192.0.2.221"), http.StatusOK)
+	for _, path := range []string{"/accounts/" + string(viewer.Account.ID), "/accounts/by-handle/" + strings.ToUpper(viewer.Account.Handle)} {
+		w := contentRequest(handler, "GET", path, "", "", &viewer, "192.0.2.221")
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"id":"`+string(viewer.Account.ID)+`"`) {
+			t.Fatalf("independent account lookup %s=%d %s", path, w.Code, w.Body.String())
+		}
+	}
 	search := readHTTPSearch(t, handler, "/search/posts?q=cross+projection", &viewer)
 	feed := readHTTPFeed(t, handler, "/feed", &viewer)
 	if len(search.Items) != 1 || search.Items[0].Post.ID != post.ID || len(feed.Items) != 2 || detail.Author.ID != viewer.Account.ID || detail.Counts.Replies != 1 || detail.Counts.Reposts != 1 || detail.Counts.ReactionsTotal != 1 || detail.Viewer == nil || !detail.Viewer.Bookmarked || !detail.Viewer.Reposted || detail.Viewer.Reaction == nil {
@@ -240,11 +246,5 @@ func TestDiscoveryCrossProjectionContract(t *testing.T) {
 	}
 	if item := search.Items[0].Post; item.Author.ID != detail.Author.ID || item.Counts.Replies != detail.Counts.Replies || item.Counts.Reposts != detail.Counts.Reposts || item.Counts.ReactionsTotal != detail.Counts.ReactionsTotal || item.Viewer == nil || !item.Viewer.Bookmarked || !item.Viewer.Reposted || item.Viewer.Reaction == nil {
 		t.Fatalf("search projection=%+v detail=%+v", item, detail)
-	}
-	for _, path := range []string{"/accounts/" + string(viewer.Account.ID), "/accounts/by-handle/" + strings.ToUpper(viewer.Account.Handle)} {
-		w := contentRequest(handler, "GET", path, "", "", &viewer, "192.0.2.221")
-		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"id":"`+string(viewer.Account.ID)+`"`) {
-			t.Fatalf("independent account lookup %s=%d %s", path, w.Code, w.Body.String())
-		}
 	}
 }

@@ -140,11 +140,28 @@ func TestGeneratedReplyFreshNewestLongPageAndDeletion(t *testing.T) {
 		oldIDs = append(oldIDs, id)
 		feedExec(t, store, `INSERT INTO replies(id,post_id,author_id,body,created_at) VALUES($1,$2,$3,$4,$5)`, id, *job.SourcePostID, job.AgentID, "older reply "+string(rune('a'+index)), oldAt)
 	}
+	handler := api.NewHandler(store, []string{testOrigin}, []byte(strings.Repeat("k", 32)), []byte(strings.Repeat("c", 32)), false, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	beforeNewest := contentRequest(handler, "GET", "/posts/"+string(*job.SourcePostID)+"/replies?sort=newest&limit=20", "", "", nil, "192.0.2.220")
+	beforeOldest := contentRequest(handler, "GET", "/posts/"+string(*job.SourcePostID)+"/replies?limit=20", "", "", nil, "192.0.2.220")
+	preview := decodeHTTPPost(t, contentRequest(handler, "GET", "/posts/"+string(*job.SourcePostID), "", "", nil, "192.0.2.220"), http.StatusOK)
+	var before struct {
+		Next *string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(beforeNewest.Body.Bytes(), &before); err != nil || beforeNewest.Code != http.StatusOK || before.Next == nil {
+		t.Fatalf("before newest=%d %s err=%v", beforeNewest.Code, beforeNewest.Body.String(), err)
+	}
+	newestCursor := *before.Next
+	if err := json.Unmarshal(beforeOldest.Body.Bytes(), &before); err != nil || beforeOldest.Code != http.StatusOK || before.Next == nil || preview.ReplyPreview.NextCursor == nil {
+		t.Fatalf("before oldest/preview=%d %s err=%v", beforeOldest.Code, beforeOldest.Body.String(), err)
+	}
+	oldestCursor, previewCursor := *before.Next, *preview.ReplyPreview.NextCursor
+	if w := contentRequest(handler, "GET", "/posts/"+string(*job.SourcePostID)+"/replies?sort=oldest&cursor="+newestCursor, "", "", nil, "192.0.2.220"); w.Code != http.StatusBadRequest {
+		t.Fatalf("sort binding=%d", w.Code)
+	}
 	published, err := store.PublishGeneration(context.Background(), job.ID, job.LeaseVersion, attempt.ID, output)
 	if err != nil || published.ResultReplyID == nil {
 		t.Fatalf("publish generated reply=%+v, %v", published, err)
 	}
-	handler := api.NewHandler(store, []string{testOrigin}, []byte(strings.Repeat("k", 32)), []byte(strings.Repeat("c", 32)), false, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	w := contentRequest(handler, "GET", "/posts/"+string(*job.SourcePostID)+"/replies?sort=newest&limit=20", "", "", nil, "192.0.2.220")
 	var page struct {
 		Items []struct {
@@ -171,6 +188,16 @@ func TestGeneratedReplyFreshNewestLongPageAndDeletion(t *testing.T) {
 	}
 	if err := json.Unmarshal(continued.Body.Bytes(), &rest); err != nil || continued.Code != http.StatusOK || len(rest.Items) != 3 || rest.Next != nil || rest.Items[0].ID != oldIDs[19] || rest.Items[1].ID != oldIDs[20] || strings.Contains(continued.Body.String(), string(*published.ResultReplyID)) {
 		t.Fatalf("newest continuation=%d %s err=%v", continued.Code, continued.Body.String(), err)
+	}
+	for _, path := range []string{
+		"/posts/" + string(*job.SourcePostID) + "/replies?sort=newest&cursor=" + newestCursor,
+		"/posts/" + string(*job.SourcePostID) + "/replies?cursor=" + oldestCursor,
+		"/posts/" + string(*job.SourcePostID) + "/replies?cursor=" + previewCursor,
+	} {
+		w := contentRequest(handler, "GET", path, "", "", nil, "192.0.2.220")
+		if w.Code != http.StatusOK || strings.Contains(w.Body.String(), string(*published.ResultReplyID)) {
+			t.Fatalf("old window admitted generated reply=%d %s", w.Code, w.Body.String())
+		}
 	}
 	feedExec(t, store, `UPDATE replies SET deleted_at=statement_timestamp() WHERE id=$1`, *published.ResultReplyID)
 	fresh := contentRequest(handler, "GET", "/posts/"+string(*job.SourcePostID)+"/replies?sort=newest&limit=20", "", "", nil, "192.0.2.220")

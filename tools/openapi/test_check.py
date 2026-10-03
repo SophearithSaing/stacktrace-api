@@ -89,7 +89,7 @@ class CheckerTest(unittest.TestCase):
         value = document()
         value["components"]["responses"] = {"scalar": "not an object"}
         value["paths"][FEED_PATH]["get"]["responses"]["200"] = {"$ref": "#/components/responses/scalar"}
-        self.assertTrue(any("response reference" in finding for finding in self.findings(value)))
+        self.assertTrue(any("strict document" in finding for finding in self.findings(value)))
 
     def test_path_item_and_reference_chains_validate_media_examples(self):
         """test_path_item_and_reference_chains_validate_media_examples resolves OpenAPI objects."""
@@ -97,11 +97,12 @@ class CheckerTest(unittest.TestCase):
         value["components"].update(
             {
                 "examples": {"bad": {"value": {"id": 7}}},
-                "requestBodies": {"body": {"$ref": "#/components/requestBodies/bodyAgain"}, "bodyAgain": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Nullable"}, "examples": {"bad": {"$ref": "#/components/examples/bad"}}}}}},
-                "responses": {"response": {"$ref": "#/components/responses/responseAgain"}, "responseAgain": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Nullable"}, "examples": {"bad": {"$ref": "#/components/examples/bad"}}}}}},
-                "pathItems": {"feed": {"get": {"operationId": "accountFeed", "requestBody": {"$ref": "#/components/requestBodies/body"}, "responses": {"200": {"$ref": "#/components/responses/response"}}}}},
+                "requestBodies": {"body": {"$ref": "#/components/requestBodies/bodyAgain"}, "bodyAgain": {"content": {"application/json": {"schema": {"$ref": "#/x-schemas/nullable"}, "examples": {"bad": {"$ref": "#/components/examples/bad"}}}}}},
+                "responses": {"response": {"$ref": "#/components/responses/responseAgain"}, "responseAgain": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/x-schemas/nullable"}, "examples": {"bad": {"$ref": "#/components/examples/bad"}}}}}},
+                "pathItems": {"feed": {"parameters": [{"name": "accountID", "in": "path", "required": True, "schema": {"type": "string"}}], "get": {"operationId": "accountFeed", "requestBody": {"$ref": "#/components/requestBodies/body"}, "responses": {"200": {"$ref": "#/components/responses/response"}}}}},
             }
         )
+        value["x-schemas"] = {"nullable": {"$ref": "#/components/schemas/Nullable"}}
         value["paths"][FEED_PATH] = {"$ref": "#/components/pathItems/feed"}
         findings = self.findings(value)
         self.assertEqual(sum("example bad" in finding for finding in findings), 2)
@@ -111,12 +112,13 @@ class CheckerTest(unittest.TestCase):
         value = document()
         value["components"]["responses"] = {"one": {"$ref": "#/components/responses/two"}, "two": {"$ref": "#/components/responses/one"}}
         value["paths"][FEED_PATH]["get"]["responses"]["200"] = {"$ref": "#/components/responses/one"}
-        self.assertTrue(any("cyclic response reference" in finding for finding in self.findings(value)))
+        self.assertTrue(any("cyclic reference" in finding for finding in self.findings(value)))
 
     def test_nested_and_boolean_schema_examples_validate(self):
         """test_nested_and_boolean_schema_examples_validate validates every inline schema."""
         value = document()
         value["components"]["schemas"]["Nested"] = {"type": "object", "properties": {"uuid": {"type": "string", "format": "uuid", "examples": ["not-a-uuid"]}, "allowed": {"examples": ["anything"]}}}
+        value["paths"][FEED_PATH]["get"]["responses"]["200"]["content"] = {"application/json": {"schema": True, "example": "anything"}}
         findings = self.findings(value)
         self.assertTrue(any("schema Nested.properties.uuid" in finding for finding in findings))
         self.assertFalse(any("allowed" in finding for finding in findings))
@@ -134,7 +136,7 @@ class CheckerTest(unittest.TestCase):
         """test_missing_and_duplicate_operation_ids_fail requires unique operation identifiers."""
         value = document()
         value["paths"]["/other"] = {"get": operation("accountFeed")}
-        self.assertTrue(any("duplicate operationId" in finding for finding in self.findings(value)))
+        self.assertTrue(any("not unique" in finding for finding in self.findings(value)))
         value["paths"]["/other"]["get"] = operation("")
         self.assertTrue(any("missing nonempty operationId" in finding for finding in self.findings(value)))
 
@@ -175,6 +177,14 @@ class CheckerTest(unittest.TestCase):
         self.assertEqual(result, 2)
         self.assertIn("cannot read OpenAPI document", output.getvalue())
         self.assertNotIn("Traceback", output.getvalue())
+
+    def test_main_reports_isolated_environment_guidance(self):
+        """test_main_reports_isolated_environment_guidance does not mutate the shared venv."""
+        output = io.StringIO()
+        with patch.object(check.sys, "prefix", "/tmp/not-the-openapi-venv"), redirect_stdout(output):
+            result = check.main()
+        self.assertEqual(result, 2)
+        self.assertIn("run make openapi-setup first", output.getvalue())
 
 
 if __name__ == "__main__":

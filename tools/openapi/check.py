@@ -8,6 +8,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+if sys.version_info < (3, 11):
+    print("OpenAPI checks require Python 3.11+; run make openapi-setup with a supported Python.")
+    raise SystemExit(2)
+
 try:
     import yaml
     from jsonschema import Draft202012Validator, FormatChecker
@@ -32,8 +36,10 @@ def pointer(document: Any, reference: str) -> Any:
         token = token.replace("~1", "/").replace("~0", "~")
         if isinstance(value, list):
             value = value[int(token)]
-        else:
+        elif isinstance(value, dict):
             value = value[token]
+        else:
+            raise TypeError("pointer traverses a scalar")
     return value
 
 
@@ -58,6 +64,62 @@ def references(document: Any, value: Any, location: str = "$") -> list[str]:
     return findings
 
 
+def reference_cycles(document: Any, value: Any, location: str = "$", in_schema: bool = False) -> list[str]:
+    """reference_cycles returns diagnostics for local Reference Object cycles."""
+    findings: list[str] = []
+    if in_schema:
+        return findings
+    if isinstance(value, dict):
+        reference = value.get("$ref")
+        if isinstance(reference, str) and reference.startswith("#/"):
+            seen: set[str] = set()
+            current = reference
+            while True:
+                if current in seen:
+                    findings.append(f"{location}.$ref: cyclic reference {current!r}")
+                    break
+                seen.add(current)
+                try:
+                    target = pointer(document, current)
+                except (KeyError, IndexError, TypeError, ValueError):
+                    break
+                if not isinstance(target, dict) or not isinstance(target.get("$ref"), str):
+                    break
+                current = target["$ref"]
+                if not current.startswith("#/"):
+                    break
+        for key, child in value.items():
+            child_is_schema = key == "schema" or (location == "$.components" and key == "schemas")
+            findings.extend(reference_cycles(document, child, f"{location}.{key}", child_is_schema))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            findings.extend(reference_cycles(document, child, f"{location}[{index}]", in_schema))
+    return findings
+
+
+def resolve_object(document: dict[str, Any], value: Any, location: str, kind: str, findings: list[str]) -> dict[str, Any] | None:
+    """resolve_object follows a local Reference Object chain to an object."""
+    seen: set[str] = set()
+    while isinstance(value, dict) and "$ref" in value:
+        reference = value["$ref"]
+        if not isinstance(reference, str) or not reference.startswith("#/"):
+            findings.append(f"{location}: invalid {kind} reference")
+            return None
+        if reference in seen:
+            findings.append(f"{location}: cyclic {kind} reference {reference!r}")
+            return None
+        seen.add(reference)
+        try:
+            value = pointer(document, reference)
+        except (KeyError, IndexError, TypeError, ValueError):
+            findings.append(f"{location}: unresolved {kind} reference {reference!r}")
+            return None
+    if not isinstance(value, dict):
+        findings.append(f"{location}: {kind} reference must resolve to an object")
+        return None
+    return value
+
+
 def schema_validator(document: dict[str, Any], schema: Any) -> Draft202012Validator:
     """schema_validator creates a format-aware validator with document-local references."""
     wrapper = dict(document)
@@ -70,15 +132,19 @@ def validate_examples(document: dict[str, Any]) -> list[str]:
     findings: list[str] = []
 
     def check_examples(schema: Any, examples: Any, location: str) -> None:
-        if schema is None or not isinstance(examples, list):
+        if not isinstance(examples, list):
             return
-        validator = schema_validator(document, schema)
+        try:
+            validator = schema_validator(document, schema)
+        except (TypeError, ValueError) as error:
+            findings.append(f"{location}: invalid schema: {error}")
+            return
         for index, example in enumerate(examples):
             error = next(validator.iter_errors(example), None)
             if error:
                 findings.append(f"{location}[{index}]: {error.message}")
 
-    def schema_nodes(value: Any, location: str):
+    def schema_nodes(value: Any, location: str) -> None:
         if isinstance(value, dict):
             if "examples" in value:
                 check_examples(value, value["examples"], location)
@@ -86,34 +152,49 @@ def validate_examples(document: dict[str, Any]) -> list[str]:
                 if key != "examples":
                     schema_nodes(child, f"{location}.{key}")
         elif isinstance(value, list):
-            for index, child in enumerate(value): schema_nodes(child, f"{location}[{index}]")
+            for index, child in enumerate(value):
+                schema_nodes(child, f"{location}[{index}]")
+
+    def media_examples(media: Any, location: str) -> None:
+        media = resolve_object(document, media, location, "media type", findings)
+        if media is None:
+            return
+        schema = media.get("schema")
+        if schema is not None:
+            schema_nodes(schema, f"{location} schema")
+        if "example" in media:
+            check_examples(schema, [media["example"]], location + " example")
+        examples = media.get("examples", {})
+        if isinstance(examples, dict):
+            for key, example in examples.items():
+                example = resolve_object(document, example, f"{location} example {key}", "example", findings)
+                if example is not None and "value" in example:
+                    check_examples(schema, [example["value"]], location + f" example {key}")
+
     for name, schema in document.get("components", {}).get("schemas", {}).items():
         schema_nodes(schema, f"schema {name}")
 
     for path, item in document.get("paths", {}).items():
-        if not isinstance(item, dict):
+        item = resolve_object(document, item, f"path {path}", "path item", findings)
+        if item is None:
             continue
         for method, operation in item.items():
-            if method not in OPERATION_KEYS or not isinstance(operation, dict):
+            if method not in OPERATION_KEYS:
                 continue
-            media_locations: list[tuple[str, Any]] = []
-            request_body = operation.get("requestBody", {})
-            if isinstance(request_body, dict) and "$ref" in request_body: request_body = pointer(document, request_body["$ref"])
-            request = request_body.get("content", {})
-            media_locations.extend((f"{method.upper()} {path} request {kind}", media) for kind, media in request.items())
+            operation = resolve_object(document, operation, f"{method.upper()} {path}", "operation", findings)
+            if operation is None:
+                continue
+            request_body = operation.get("requestBody")
+            if request_body is not None:
+                request_body = resolve_object(document, request_body, f"{method.upper()} {path} request", "request body", findings)
+                if request_body is not None:
+                    for kind, media in request_body.get("content", {}).items():
+                        media_examples(media, f"{method.upper()} {path} request {kind}")
             for status, response in operation.get("responses", {}).items():
-                if isinstance(response, dict) and "$ref" in response: response = pointer(document, response["$ref"])
-                for kind, media in response.get("content", {}).items():
-                    media_locations.append((f"{method.upper()} {path} response {status} {kind}", media))
-            for location, media in media_locations:
-                if not isinstance(media, dict):
-                    continue
-                schema = media.get("schema")
-                if "example" in media:
-                    check_examples(schema, [media["example"]], location + " example")
-                for key, example in media.get("examples", {}).items():
-                    if isinstance(example, dict) and "value" in example:
-                        check_examples(schema, [example["value"]], location + f" example {key}")
+                response = resolve_object(document, response, f"{method.upper()} {path} response {status}", "response", findings)
+                if response is not None:
+                    for kind, media in response.get("content", {}).items():
+                        media_examples(media, f"{method.upper()} {path} response {status} {kind}")
     return findings
 
 
@@ -123,13 +204,14 @@ def operations(document: dict[str, Any]) -> tuple[set[tuple[str, str]], list[str
     findings: list[str] = []
     seen: set[str] = set()
     for path, item in document.get("paths", {}).items():
-        if not isinstance(item, dict):
+        item = resolve_object(document, item, f"path {path}", "path item", findings)
+        if item is None:
             continue
         for method, operation in item.items():
             if method not in OPERATION_KEYS:
                 continue
-            if not isinstance(operation, dict):
-                findings.append(f"{method.upper()} {path}: operation must be an object")
+            operation = resolve_object(document, operation, f"{method.upper()} {path}", "operation", findings)
+            if operation is None:
                 continue
             found.add((method.upper(), path))
             operation_id = operation.get("operationId")
@@ -143,10 +225,10 @@ def operations(document: dict[str, Any]) -> tuple[set[tuple[str, str]], list[str
 
 
 def source_routes(server_source: str) -> tuple[set[tuple[str, str]], list[str]]:
-    """source_routes reads explicit method/path registrations from server source."""
+    """source_routes reads explicit s.mux method/path registrations from server source."""
     routes: set[tuple[str, str]] = set()
     findings: list[str] = []
-    for method, path in re.findall(r'HandleFunc\("([^\s\",/]+) ([^"]+)"', server_source):
+    for method, path in re.findall(r's\.mux\.HandleFunc\("([^\s",/]+) ([^"]+)"', server_source):
         if method == "GET" and path == "/api/v1/accounts/{accountID}/{resource}":
             path = "/api/v1/accounts/{accountID}/feed"
         routes.add((method, path))
@@ -155,9 +237,18 @@ def source_routes(server_source: str) -> tuple[set[tuple[str, str]], list[str]]:
 
 def check(document: dict[str, Any], server_source: str) -> list[str]:
     """check returns all raw-document, example, operation, and route diagnostics."""
+    if not isinstance(document, dict):
+        return ["OpenAPI document must be an object"]
     findings = references(document, document)
-    if not findings:
-        findings.extend(f"strict document: {error.message}" for error in OpenAPIV31SpecValidator(document).iter_errors())
+    findings.extend(reference_cycles(document, document))
+    if findings:
+        return findings
+    try:
+        structural_errors = list(OpenAPIV31SpecValidator(document).iter_errors())
+    except Exception as error:
+        return [f"strict document: validation failed: {error}"]
+    if structural_errors:
+        return [f"strict document: {error.message}" for error in structural_errors]
     findings.extend(validate_examples(document))
     documented, operation_findings = operations(document)
     source, source_findings = source_routes(server_source)
@@ -170,20 +261,27 @@ def check(document: dict[str, Any], server_source: str) -> list[str]:
 
 def main() -> int:
     """main runs the repository checker and prints concise diagnostics."""
-    if sys.version_info < (3, 11):
-        print("OpenAPI checks require Python 3.11+; run make openapi-setup with a supported Python.")
-        return 2
     if Path(sys.prefix).resolve() != (ROOT / "tools/openapi/.venv").resolve():
         print("OpenAPI dependencies are unavailable; run make openapi-setup first.")
         return 2
-    document = yaml.safe_load(SPEC_PATH.read_text())
-    findings = check(document, SERVER_PATH.read_text())
+    try:
+        document = yaml.safe_load(SPEC_PATH.read_text())
+    except (OSError, yaml.YAMLError) as error:
+        print(f"cannot read OpenAPI document {SPEC_PATH}: {error}")
+        return 2
+    try:
+        server_source = SERVER_PATH.read_text()
+    except OSError as error:
+        print(f"cannot read API source {SERVER_PATH}: {error}")
+        return 2
+    findings = check(document, server_source)
     if findings:
         print("FAIL OpenAPI validation")
         print(*findings, sep="\n")
         return 1
     documented, _ = operations(document)
-    examples = sum(len(schema.get("examples", [])) for schema in document["components"]["schemas"].values() if isinstance(schema, dict))
+    schemas = document.get("components", {}).get("schemas", {})
+    examples = sum(len(schema.get("examples", [])) for schema in schemas.values() if isinstance(schema, dict))
     print(f"PASS OpenAPI: {len(documented)} routes, {examples} schema examples")
     return 0
 

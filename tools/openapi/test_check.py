@@ -35,7 +35,7 @@ class CheckerTest(unittest.TestCase):
         value = document(); value["components"]["schemas"]["UUID"] = {"type": "string", "format": "uuid", "examples": ["bad"]}; value["components"]["schemas"]["Time"] = {"type": "string", "format": "date-time", "examples": ["bad"]}
         self.assertEqual(sum("schema " in item for item in self.findings(value)), 2)
         value = document(); value["components"]["schemas"]["Nullable"]["examples"] = [{"id": 1}]
-        self.assertTrue(any("schema Nullable example" in item for item in self.findings(value)))
+        self.assertTrue(any("schema Nullable" in item for item in self.findings(value)))
         self.assertTrue(any("missing OpenAPI route: FOO" in item for item in self.findings(document(), 's.mux.HandleFunc("FOO /other", h)')))
         self.assertTrue(any("stale OpenAPI route" in item for item in self.findings(document(), 's.mux.HandleFunc("GET /other", h)')))
 

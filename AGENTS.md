@@ -82,5 +82,6 @@ abstractions and infrastructure for features that have not been requested.
   permissions; verify execution when changing policies and preserve unrelated
   configuration.
 - Ordinary tests and smoke checks must not make paid provider calls.
-- When changing `docs/openapi.yaml` or explicit API registrations, run the optional
-  offline `make openapi-check` and update affected contract fixtures.
+- When changing serializers, domain validation, `docs/openapi.yaml`, or explicit API
+  registrations, update affected contract examples/fixtures and run `make openapi-check`.
+- For OpenAPI tooling-only edits, run its focused unittest and `make openapi-check`.

@@ -37,7 +37,7 @@ def pointer(document: Any, reference: str) -> Any:
     return value
 
 
-def references(value: Any, location: str = "$") -> list[str]:
+def references(document: Any, value: Any, location: str = "$") -> list[str]:
     """references returns invalid or unresolved reference diagnostics in value."""
     findings: list[str] = []
     if isinstance(value, dict):
@@ -48,19 +48,20 @@ def references(value: Any, location: str = "$") -> list[str]:
                     findings.append(f"{child_location}: external reference {child!r} is not allowed")
                 else:
                     try:
-                        pointer(value_root, child)
-                    except (KeyError, IndexError, ValueError):
+                        pointer(document, child)
+                    except (KeyError, IndexError, TypeError, ValueError):
                         findings.append(f"{child_location}: unresolved reference {child!r}")
-            findings.extend(references(child, child_location))
+            findings.extend(references(document, child, child_location))
     elif isinstance(value, list):
         for index, child in enumerate(value):
-            findings.extend(references(child, f"{location}[{index}]"))
+            findings.extend(references(document, child, f"{location}[{index}]"))
     return findings
 
 
 def schema_validator(document: dict[str, Any], schema: Any) -> Draft202012Validator:
     """schema_validator creates a format-aware validator with document-local references."""
-    wrapper = {"$ref": "#/schema", "schema": schema, "components": document.get("components", {})}
+    wrapper = dict(document)
+    wrapper.update({"$ref": "#/schema", "schema": schema})
     return Draft202012Validator(wrapper, format_checker=FormatChecker())
 
 
@@ -69,7 +70,7 @@ def validate_examples(document: dict[str, Any]) -> list[str]:
     findings: list[str] = []
 
     def check_examples(schema: Any, examples: Any, location: str) -> None:
-        if not schema or not isinstance(examples, list):
+        if schema is None or not isinstance(examples, list):
             return
         validator = schema_validator(document, schema)
         for index, example in enumerate(examples):
@@ -77,9 +78,17 @@ def validate_examples(document: dict[str, Any]) -> list[str]:
             if error:
                 findings.append(f"{location}[{index}]: {error.message}")
 
+    def schema_nodes(value: Any, location: str):
+        if isinstance(value, dict):
+            if "examples" in value:
+                check_examples(value, value["examples"], location)
+            for key, child in value.items():
+                if key != "examples":
+                    schema_nodes(child, f"{location}.{key}")
+        elif isinstance(value, list):
+            for index, child in enumerate(value): schema_nodes(child, f"{location}[{index}]")
     for name, schema in document.get("components", {}).get("schemas", {}).items():
-        if isinstance(schema, dict):
-            check_examples(schema, schema.get("examples"), f"schema {name} example")
+        schema_nodes(schema, f"schema {name}")
 
     for path, item in document.get("paths", {}).items():
         if not isinstance(item, dict):
@@ -88,9 +97,12 @@ def validate_examples(document: dict[str, Any]) -> list[str]:
             if method not in OPERATION_KEYS or not isinstance(operation, dict):
                 continue
             media_locations: list[tuple[str, Any]] = []
-            request = operation.get("requestBody", {}).get("content", {})
+            request_body = operation.get("requestBody", {})
+            if isinstance(request_body, dict) and "$ref" in request_body: request_body = pointer(document, request_body["$ref"])
+            request = request_body.get("content", {})
             media_locations.extend((f"{method.upper()} {path} request {kind}", media) for kind, media in request.items())
             for status, response in operation.get("responses", {}).items():
+                if isinstance(response, dict) and "$ref" in response: response = pointer(document, response["$ref"])
                 for kind, media in response.get("content", {}).items():
                     media_locations.append((f"{method.upper()} {path} response {status} {kind}", media))
             for location, media in media_locations:
@@ -134,18 +146,16 @@ def source_routes(server_source: str) -> tuple[set[tuple[str, str]], list[str]]:
     """source_routes reads explicit method/path registrations from server source."""
     routes: set[tuple[str, str]] = set()
     findings: list[str] = []
-    for method, path in re.findall(r'HandleFunc\("([A-Za-z]+) ([^"]+)"', server_source):
-        if method.upper() != method:
-            findings.append(f"source route {method} {path}: method token must be uppercase")
-        routes.add((method.upper(), path.replace("/{accountID}/{resource}", "/{accountID}/feed")))
+    for method, path in re.findall(r'HandleFunc\("([^\s\",/]+) ([^"]+)"', server_source):
+        if method == "GET" and path == "/api/v1/accounts/{accountID}/{resource}":
+            path = "/api/v1/accounts/{accountID}/feed"
+        routes.add((method, path))
     return routes, findings
 
 
 def check(document: dict[str, Any], server_source: str) -> list[str]:
     """check returns all raw-document, example, operation, and route diagnostics."""
-    global value_root
-    value_root = document
-    findings = references(document)
+    findings = references(document, document)
     if not findings:
         findings.extend(f"strict document: {error.message}" for error in OpenAPIV31SpecValidator(document).iter_errors())
     findings.extend(validate_examples(document))
@@ -177,8 +187,6 @@ def main() -> int:
     print(f"PASS OpenAPI: {len(documented)} routes, {examples} schema examples")
     return 0
 
-
-value_root: Any = {}
 
 if __name__ == "__main__":
     raise SystemExit(main())

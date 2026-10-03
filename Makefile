@@ -14,7 +14,7 @@ diagrams-check:
 	@node tools/diagrams/check.js
 
 openapi-setup:
-	@python3 -c 'import sys; assert sys.version_info >= (3, 11), "OpenAPI tooling requires Python 3.11+"'
+	@python3 -c 'import sys; print("OpenAPI tooling requires Python 3.11+", file=sys.stderr) if sys.version_info < (3, 11) else None; sys.exit(sys.version_info < (3, 11))'
 	@python3 -m venv tools/openapi/.venv
 	@tools/openapi/.venv/bin/python -m pip install --requirement tools/openapi/requirements.lock
 	@tools/openapi/.venv/bin/python -m pip check

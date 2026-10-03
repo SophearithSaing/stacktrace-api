@@ -30,10 +30,6 @@ func (s *server) listSuggestedAgents(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, err)
 		return
 	}
-	if values.Has("limit") && values.Get("limit") == "" {
-		writeFailure(w, invalidQueryError())
-		return
-	}
 	query, err := suggestionQuery(values.Get("limit"))
 	if err != nil {
 		writeFailure(w, err)
@@ -61,10 +57,6 @@ func (s *server) listTrends(w http.ResponseWriter, r *http.Request) {
 	values, err := strictQuery(r.URL.RawQuery, "limit")
 	if err != nil {
 		writeFailure(w, err)
-		return
-	}
-	if values.Has("limit") && values.Get("limit") == "" {
-		writeFailure(w, invalidQueryError())
 		return
 	}
 	query, err := trendQuery(values.Get("limit"))

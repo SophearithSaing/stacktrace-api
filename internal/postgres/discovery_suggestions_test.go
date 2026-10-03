@@ -147,6 +147,16 @@ func TestDiscoverySuggestionAndTrendHTTPContracts(t *testing.T) {
 	}
 }
 
+func TestDiscoveryEmptyHTTPContracts(t *testing.T) {
+	_, handler := identityHandler(t)
+	for _, path := range []string{"/agents/suggested", "/trends"} {
+		response := contentRequest(handler, "GET", path, "", "", nil, "192.0.2.221")
+		if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "private, no-store" || response.Header().Get("Access-Control-Allow-Origin") != testOrigin || response.Body.String() != `{"items":[]}`+"\n" {
+			t.Fatalf("empty %s=%d headers=%v body=%s", path, response.Code, response.Header(), response.Body.String())
+		}
+	}
+}
+
 func TestTrendsWindowsAndOrdering(t *testing.T) {
 	store := feedTestStore(t)
 	_, session := contentTestActor(t, store, "trend_author")

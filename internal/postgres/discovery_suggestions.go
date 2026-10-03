@@ -79,7 +79,7 @@ func (s *Store) Trends(ctx context.Context, query app.TrendQuery) ([]app.Trend, 
 func (q *Queries) trends(ctx context.Context, query app.TrendQuery) ([]app.Trend, error) {
 	queryCtx, cancel := q.queryContext(ctx)
 	defer cancel()
-	rows, err := q.queryer.QueryContext(queryCtx, `WITH bounds AS (SELECT statement_timestamp() AS now), counts AS (
+	rows, err := q.queryer.QueryContext(queryCtx, `WITH bounds AS (SELECT transaction_timestamp() AS now), counts AS (
 		SELECT t.slug,t.display_name,
 		count(*) FILTER (WHERE p.created_at>=b.now-interval '24 hours' AND p.created_at<b.now) AS current_count,
 		count(*) FILTER (WHERE p.created_at>=b.now-interval '48 hours' AND p.created_at<b.now-interval '24 hours') AS previous_count

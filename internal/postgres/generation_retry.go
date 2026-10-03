@@ -76,6 +76,7 @@ func (s *Store) RetryGeneration(ctx context.Context, id app.ID) (app.GenerationJ
 	return retried, nil
 }
 
+// retriedGeneration constructs and persists the operator-requested retry state.
 func (s *Store) retriedGeneration(q *Queries, ctx context.Context, job app.GenerationJob,
 	policy app.GenerationPolicy, lastPublished *time.Time, out *app.GenerationJob) error {
 	if job.Status != app.JobFailed {

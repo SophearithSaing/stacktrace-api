@@ -52,6 +52,7 @@ type adminCommand struct {
 	path    string
 }
 
+// main runs the admin command.
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), adminCommandDeadline)
 	defer cancel()
@@ -61,6 +62,7 @@ func main() {
 	}
 }
 
+// run parses configuration and runs the requested administration command.
 func run(ctx context.Context, args []string, output io.Writer) error {
 	command, err := parseAdminCommand(args)
 	if err != nil {
@@ -78,6 +80,7 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 	return executeAdminCommand(ctx, command, pool, output)
 }
 
+// adminID parses and validates an administrator-supplied identifier.
 func adminID(value string) (app.ID, error) {
 	if _, err := app.ParseID(value); err != nil {
 		return "", errors.New("targets must be valid UUIDs")
@@ -85,6 +88,7 @@ func adminID(value string) (app.ID, error) {
 	return app.ID(value), nil
 }
 
+// parseAdminCommand parses and validates an administration subcommand.
 func parseAdminCommand(args []string) (adminCommand, error) {
 	var command adminCommand
 	if len(args) == 0 {
@@ -118,6 +122,7 @@ func parseAdminCommand(args []string) (adminCommand, error) {
 	}
 }
 
+// parseSingleWordCommand parses a subcommand that accepts exactly one value.
 func parseSingleWordCommand(command adminCommand, name string, rest []string) (adminCommand, error) {
 	command.name = name
 	if len(rest) == 0 {
@@ -161,6 +166,7 @@ func parseSingleWordCommand(command adminCommand, name string, rest []string) (a
 	return command, nil
 }
 
+// parsePersonaCreate parses persona creation arguments.
 func parsePersonaCreate(command adminCommand, rest []string) (adminCommand, error) {
 	if len(rest) != 2 {
 		return command, errors.New("persona create expects AGENT and FILE")
@@ -174,6 +180,7 @@ func parsePersonaCreate(command adminCommand, rest []string) (adminCommand, erro
 	return command, nil
 }
 
+// parsePersonaSelect parses persona selection arguments.
 func parsePersonaSelect(command adminCommand, rest []string) (adminCommand, error) {
 	if len(rest) != 2 {
 		return command, errors.New("persona select expects AGENT and VERSION")
@@ -191,6 +198,7 @@ func parsePersonaSelect(command adminCommand, rest []string) (adminCommand, erro
 	return command, nil
 }
 
+// parsePolicySet parses policy update arguments.
 func parsePolicySet(command adminCommand, rest []string) (adminCommand, error) {
 	if len(rest) != 2 {
 		return command, errors.New("policy set expects AGENT and FILE")
@@ -204,6 +212,7 @@ func parsePolicySet(command adminCommand, rest []string) (adminCommand, error) {
 	return command, nil
 }
 
+// parseAgentPauseResume parses per-agent pause or resume arguments.
 func parseAgentPauseResume(command adminCommand, rest []string) (adminCommand, error) {
 	if len(rest) != 1 {
 		return command, errors.New("agent pause/resume expects an AGENT or --all")
@@ -220,6 +229,7 @@ func parseAgentPauseResume(command adminCommand, rest []string) (adminCommand, e
 	return command, nil
 }
 
+// parseJobList parses bounded job-list filters.
 func parseJobList(command adminCommand, rest []string) (adminCommand, error) {
 	seen := make(map[string]bool)
 	for index := 0; index < len(rest); index++ {
@@ -269,6 +279,7 @@ func parseJobList(command adminCommand, rest []string) (adminCommand, error) {
 	return command, nil
 }
 
+// parseSingleTarget parses a command requiring one target identifier.
 func parseSingleTarget(command adminCommand, rest []string) (adminCommand, error) {
 	if len(rest) != 1 {
 		return command, fmt.Errorf("%s expects one UUID target", command.name)
@@ -281,6 +292,7 @@ func parseSingleTarget(command adminCommand, rest []string) (adminCommand, error
 	return command, nil
 }
 
+// requireFlagValue returns the next CLI flag value or a usage error.
 func requireFlagValue(rest []string, index int) (string, error) {
 	if index+1 >= len(rest) {
 		return "", errors.New("missing flag value")
@@ -318,6 +330,7 @@ func readAdminPayload(path string, max int64) ([]byte, error) {
 	return payload, nil
 }
 
+// writeAdminJSON encodes one administration result to the command output.
 func writeAdminJSON(output io.Writer, value any) error {
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -435,6 +448,7 @@ func executeAdminCommand(ctx context.Context, command adminCommand, store *postg
 	}
 }
 
+// executeAdminJobList executes the bounded generation-job listing command.
 func executeAdminJobList(ctx context.Context, command adminCommand, store *postgres.Store, output io.Writer) error {
 	filter := postgres.AdminJobFilter{AgentID: command.agent, Status: command.status, Cursor: command.cursor, Limit: command.limit}
 	jobs, next, err := store.ListGenerationJobs(ctx, filter)

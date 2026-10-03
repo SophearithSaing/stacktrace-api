@@ -116,6 +116,7 @@ func AdvanceGenerationSchedule(s AgentSettings, now time.Time, draw func(int64) 
 	return s, due, nil
 }
 
+// sampleGenerationSlot samples and stores the next generation slot within a window.
 func sampleGenerationSlot(s *AgentSettings, lower, end time.Time, draw func(int64) int64) error {
 	s.NextPostAt = nil
 	if !lower.Before(end) {
@@ -138,6 +139,7 @@ func sampleGenerationSlot(s *AgentSettings, lower, end time.Time, draw func(int6
 	return nil
 }
 
+// generationDraw returns a validated bounded random draw.
 func generationDraw(draw func(int64) int64, n int64) (int64, error) {
 	if n == 1 {
 		return 0, nil
@@ -152,6 +154,7 @@ func generationDraw(draw func(int64) int64, n int64) (int64, error) {
 	return value, nil
 }
 
+// laterGenerationTime returns the later of two instants.
 func laterGenerationTime(a, b time.Time) time.Time {
 	if a.After(b) {
 		return a
@@ -159,10 +162,12 @@ func laterGenerationTime(a, b time.Time) time.Time {
 	return b
 }
 
+// generationWindow returns the local start and end instants for a policy date.
 func generationWindow(date string, policy GenerationPolicy, location *time.Location) (time.Time, time.Time) {
 	return generationBoundary(date, policy.ActiveStart, location), generationBoundary(date, policy.ActiveEnd, location)
 }
 
+// generationBoundary resolves a local wall-clock boundary across timezone transitions.
 // Resolve wall times explicitly rather than relying on time.Date's unspecified
 // DST choice. Repeated boundaries choose the earliest occurrence. Missing times
 // clamp forward to the first valid wall instant (02:30 -> 03:00 in a 02-03 gap).

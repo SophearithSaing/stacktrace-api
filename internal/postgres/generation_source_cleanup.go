@@ -8,6 +8,7 @@ import (
 
 const generationSourceCleanupBatch = 32
 
+// cancelRemovedGenerationSourceJobs cancels a bounded batch of jobs whose source was removed.
 // Caller owns the canonical post lock and has already invalidated the source
 // (including repost FK nulling). Only job locks are acquired here. Deletion is
 // synchronous; cancelling arbitrarily large conversation fanout is not. Any

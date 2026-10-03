@@ -9,6 +9,7 @@ import (
 	"github.com/SophearithSaing/stacktrace-api/internal/app"
 )
 
+// lockExecutionEligibility locks and loads source, account, and settings eligibility state.
 // Acquire source -> agent account SHARE -> settings UPDATE. Job references are
 // read without locking first; callers acquire budget/root/job locks afterward.
 // This single-agent preparation is NOT the publisher's multi-agent locking path:
@@ -58,6 +59,7 @@ func (q *Queries) lockExecutionEligibility(ctx context.Context, job app.Generati
 	return settings.Policy, settings.LastPublishedAt, "", nil
 }
 
+// executionPolicyAllowed rechecks quota, timing, and policy eligibility for a locked job.
 // Retained reservations are ranked by (created_at,id), including terminal jobs.
 // Quotas use the enqueue instant's local day under the current policy timezone,
 // NOT publication's day; midnight cannot refund or double-consume a reservation.
@@ -163,6 +165,7 @@ func (q *Queries) executionPolicyAllowed(ctx context.Context, job app.Generation
 	return err == nil && count <= cap, databaseError(ctx, err)
 }
 
+// executionSourceCreatedAt returns the locked generation source's creation time.
 // Read before the final admission clock. The source rows are already locked.
 func (q *Queries) executionSourceCreatedAt(ctx context.Context, job app.GenerationJob) (time.Time, error) {
 	var created time.Time
@@ -171,6 +174,7 @@ func (q *Queries) executionSourceCreatedAt(ctx context.Context, job app.Generati
 	return created, databaseError(ctx, err)
 }
 
+// executionTriggerTimeAllowed reports whether current trigger timing satisfies policy.
 // Recheck the time-sensitive trigger restrictions without more SQL after the
 // final clock. Retained quota/cooldown ranks depend on CreatedAt, not this clock.
 func executionTriggerTimeAllowed(job app.GenerationJob, p app.GenerationPolicy, sourceCreated, now time.Time) bool {

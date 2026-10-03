@@ -33,6 +33,7 @@ const (
 	GenerationPermanent             GenerationFailure = "provider_permanent"
 )
 
+// Valid reports whether the value is a recognized enum member.
 func (f GenerationFailure) Valid() bool {
 	switch f {
 	case GenerationTransient, GenerationRateLimited, GenerationTimeout, GenerationInvalidOutput,
@@ -43,6 +44,7 @@ func (f GenerationFailure) Valid() bool {
 	return false
 }
 
+// StopsExecution reports whether the failure must stop the worker execution loop.
 func (f GenerationFailure) StopsExecution() bool {
 	return !f.Valid() || f == GenerationCredentials || f == GenerationConfiguration || f == GenerationAccountingUnsupported
 }
@@ -61,6 +63,7 @@ type GenerationOutcome struct {
 	OutputTokens      *int64
 }
 
+// Validate checks whether the value satisfies its domain invariants.
 func (o GenerationOutcome) Validate() error {
 	if len(o.ProviderRequestID) > 256 {
 		return ErrGenerationOutput
@@ -85,6 +88,7 @@ func (o GenerationOutcome) Validate() error {
 	return nil
 }
 
+// validGenerationOutcomeTime reports whether a provider outcome timestamp is present and canonical.
 func validGenerationOutcomeTime(value time.Time) bool {
 	return !value.IsZero() && value.UTC().Year() >= 1 && value.UTC().Year() <= 9999
 }

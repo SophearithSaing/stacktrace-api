@@ -6,6 +6,7 @@ import (
 	"github.com/SophearithSaing/stacktrace-api/internal/app"
 )
 
+// CreateAccount inserts a validated account.
 func (q *Queries) CreateAccount(ctx context.Context, account app.Account) error {
 	ctx, cancel := q.queryContext(ctx)
 	defer cancel()
@@ -21,6 +22,7 @@ func (q *Queries) CreateAccount(ctx context.Context, account app.Account) error 
 	return databaseError(ctx, err)
 }
 
+// AccountByID loads an account by identifier.
 func (q *Queries) AccountByID(ctx context.Context, id app.ID) (app.Account, error) {
 	ctx, cancel := q.queryContext(ctx)
 	defer cancel()
@@ -48,14 +50,17 @@ func (q *Queries) AccountByID(ctx context.Context, id app.ID) (app.Account, erro
 	return account, nil
 }
 
+// ProfileByID loads an account profile by identifier for a viewer.
 func (q *Queries) ProfileByID(ctx context.Context, id app.ID, viewer app.ID) (app.AccountProfile, error) {
 	return q.profile(ctx, "a.id = $1", string(id), viewer)
 }
 
+// ProfileByHandle loads an account profile by handle for a viewer.
 func (q *Queries) ProfileByHandle(ctx context.Context, handle string, viewer app.ID) (app.AccountProfile, error) {
 	return q.profile(ctx, "a.handle = $1", handle, viewer)
 }
 
+// profile loads an account profile using a validated lookup predicate.
 // Independent subqueries avoid multiplying counts; one statement gives a
 // consistent snapshot.
 func (q *Queries) profile(ctx context.Context, predicate, value string, viewer app.ID) (app.AccountProfile, error) {
@@ -77,6 +82,7 @@ func (q *Queries) profile(ctx context.Context, predicate, value string, viewer a
 	return profile, databaseError(ctx, err)
 }
 
+// nullableID returns nil for a zero identifier and the identifier otherwise.
 func nullableID(id app.ID) any {
 	if id == "" {
 		return nil

@@ -11,6 +11,7 @@ import (
 const generationDailyTokenBudget int64 = 500000
 const generationBudgetLock int64 = 783245196031 // shared by admission and settlement
 
+// lockGenerationBudget locks the singleton generation budget row.
 func (q *Queries) lockGenerationBudget(ctx context.Context) error {
 	if q.lifetime == nil {
 		return errGenerationTransaction
@@ -27,6 +28,7 @@ func (s *Store) ReserveGeneration(ctx context.Context, id app.ID, version int64,
 	return s.reserveGeneration(ctx, id, version, input, nil)
 }
 
+// reserveGeneration validates admission and reserves provider token spend.
 func (s *Store) reserveGeneration(ctx context.Context, id app.ID, version int64, input app.GenerationContext, override *time.Time) (app.GenerationAdmission, error) {
 	var result app.GenerationAdmission
 	err := s.Transaction(ctx, func(q *Queries) error {
@@ -40,6 +42,7 @@ func (s *Store) reserveGeneration(ctx context.Context, id app.ID, version int64,
 	return result, nil
 }
 
+// reserveGeneration validates admission and reserves provider token spend.
 func (q *Queries) reserveGeneration(ctx context.Context, id app.ID, version int64, input app.GenerationContext, override *time.Time) (app.GenerationAdmission, error) {
 	if q.lifetime == nil {
 		return app.GenerationAdmission{}, errGenerationTransaction
@@ -213,10 +216,12 @@ func (q *Queries) reserveGeneration(ctx context.Context, id app.ID, version int6
 	return app.GenerationAdmission{Attempt: &attempt}, nil
 }
 
+// sameAttemptSource reports whether two optional attempt source identifiers match.
 func sameAttemptSource(a, b *app.ID) bool {
 	return a == nil && b == nil || a != nil && b != nil && *a == *b
 }
 
+// executionAttempts loads bounded attempt history for a locked generation job.
 // Bounded even with legacy/operator history. Caller owns the job lock. Admission
 // also owns budget before taking attempt locks; job-only callers do not write them.
 func (q *Queries) executionAttempts(ctx context.Context, id app.ID) ([]app.GenerationAttempt, error) {

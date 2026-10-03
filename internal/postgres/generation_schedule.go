@@ -31,6 +31,7 @@ func (s *Store) ScheduleGeneration(ctx context.Context) (GenerationScheduleResul
 	return s.scheduleGeneration(ctx, nil, rand.Int64N)
 }
 
+// scheduleGeneration runs one bounded scheduling pass.
 // The time override and RNG are private deterministic integration-test inputs.
 // Production eligibility always obtains database time after acquiring row locks.
 func (s *Store) scheduleGeneration(ctx context.Context, now *time.Time, draw func(int64) int64) (GenerationScheduleResult, error) {
@@ -63,6 +64,7 @@ func (s *Store) scheduleGeneration(ctx context.Context, now *time.Time, draw fun
 	return result, nil
 }
 
+// generationScheduleCandidates discovers a bounded set of agents due for scheduling.
 func (s *Store) generationScheduleCandidates(ctx context.Context) ([]app.ID, error) {
 	ctx, cancel := s.queryContext(ctx)
 	defer cancel()
@@ -133,6 +135,7 @@ func (s *Store) generationScheduleCandidates(ctx context.Context) ([]app.ID, err
 	return ids, nil
 }
 
+// scheduleGenerationAgent advances and persists scheduling state for one locked agent.
 func (q *Queries) scheduleGenerationAgent(ctx context.Context, agentID app.ID, now *time.Time, draw func(int64) int64) (GenerationScheduleResult, error) {
 	var result GenerationScheduleResult
 	if q.lifetime == nil {

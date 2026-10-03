@@ -13,10 +13,12 @@ import (
 	"github.com/SophearithSaing/stacktrace-api/internal/app"
 )
 
+// trustedOrigin reports whether a request has an allowed browser origin.
 func (s *server) trustedOrigin(r *http.Request) bool {
 	return len(r.Header.Values("Origin")) == 1 && slices.Contains(s.clientOrigins, r.Header.Get("Origin"))
 }
 
+// cors applies CORS policy and handles preflight requests.
 // Set CORS headers before any body/limit/error handling, including preflight.
 func (s *server) cors(w http.ResponseWriter, r *http.Request) bool {
 	if !strings.HasPrefix(r.URL.Path, "/api/") {
@@ -69,6 +71,7 @@ func (s *server) cors(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
+// cookieName returns the environment-specific session cookie name.
 func (s *server) cookieName() string {
 	if s.secureCookies {
 		return "__Host-stacktrace_session"
@@ -76,6 +79,7 @@ func (s *server) cookieName() string {
 	return "stacktrace_session_dev"
 }
 
+// sessionToken returns the request's session cookie value.
 func (s *server) sessionToken(r *http.Request) string {
 	cookies := r.CookiesNamed(s.cookieName())
 	if len(cookies) != 1 || app.SessionHash(cookies[0].Value) == "" {
@@ -84,6 +88,7 @@ func (s *server) sessionToken(r *http.Request) string {
 	return cookies[0].Value
 }
 
+// setSessionCookie writes or clears the configured session cookie.
 func (s *server) setSessionCookie(w http.ResponseWriter, token string) {
 	cookie := &http.Cookie{
 		Name: s.cookieName(), Value: token, Path: "/", HttpOnly: true,
@@ -97,6 +102,7 @@ func (s *server) setSessionCookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, cookie)
 }
 
+// csrfToken derives the CSRF token bound to a session token.
 func (s *server) csrfToken(token string) string {
 	mac := hmac.New(sha256.New, s.csrfSigningKey)
 	mac.Write([]byte(token))

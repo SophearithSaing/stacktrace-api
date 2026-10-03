@@ -24,6 +24,7 @@ type migration struct {
 	name, checksum, sql string
 }
 
+// loadMigrations loads and validates an ordered migration catalog.
 func loadMigrations(files fs.FS) ([]migration, error) {
 	names, err := fs.Glob(files, "*.sql")
 	if err != nil || len(names) == 0 {
@@ -60,6 +61,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 	return s.migrate(ctx, catalog)
 }
 
+// migrate applies a validated migration catalog transactionally.
 func (s *Store) migrate(ctx context.Context, catalog []migration) error {
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
@@ -113,6 +115,7 @@ func (s *Store) Ready(ctx context.Context) error {
 	return nil
 }
 
+// checkHistory validates applied migration history and returns its current version.
 func checkHistory(ctx context.Context, connection queryer, catalog []migration) (int, error) {
 	rows, err := connection.QueryContext(ctx, `SELECT version, name, checksum FROM schema_migrations ORDER BY version`)
 	if err != nil {

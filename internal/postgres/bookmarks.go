@@ -85,6 +85,7 @@ func (s *Store) ListBookmarks(ctx context.Context, sessionHash string, window ap
 	return page, err
 }
 
+// validateBookmarkWindow normalizes and validates a private bookmark pagination window.
 func validateBookmarkWindow(window app.ReadWindow) (app.ReadWindow, error) {
 	if window.Sort == "" {
 		window.Sort = app.ReplySortNewest

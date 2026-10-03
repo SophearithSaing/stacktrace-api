@@ -34,6 +34,7 @@ func (s *Store) PublishGeneration(ctx context.Context, id app.ID, version int64,
 	return published, nil
 }
 
+// publicationReplay validates and returns an idempotent publication replay.
 func (q *Queries) publicationReplay(ctx context.Context, job app.GenerationJob, version int64, attemptID app.ID, output app.GenerationResult) (app.GenerationJob, error) {
 	if job.LeaseVersion != version || job.PublishedAttemptID == nil || *job.PublishedAttemptID != attemptID {
 		return app.GenerationJob{}, app.ErrConflict
@@ -50,6 +51,7 @@ func (q *Queries) publicationReplay(ctx context.Context, job app.GenerationJob, 
 	return job, errGenerationPublicationReplay
 }
 
+// publishGeneration validates authority and atomically publishes generated content.
 func (q *Queries) publishGeneration(ctx context.Context, id app.ID, version int64, attemptID app.ID, output app.GenerationResult) (app.GenerationJob, error) {
 	if q.lifetime == nil {
 		return app.GenerationJob{}, errGenerationTransaction
@@ -224,6 +226,7 @@ func (q *Queries) publishGeneration(ctx context.Context, id app.ID, version int6
 	return after, nil
 }
 
+// insertGenerationContent inserts generated post or reply content and its provenance.
 func (q *Queries) insertGenerationContent(ctx context.Context, job app.GenerationJob, content app.Content, id app.ID, tags []app.ID, now time.Time) error {
 	if job.OutputKind == app.OutputReply {
 		result, err := q.queryer.ExecContext(ctx, `INSERT INTO replies(id,post_id,author_id,body,created_at) VALUES($1,$2,$3,$4,$5)`, id, job.SourcePostID, job.AgentID, content.Body, now)

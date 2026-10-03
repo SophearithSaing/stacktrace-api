@@ -11,6 +11,7 @@ import (
 // timestamp range (including settlement's upward microsecond rounding).
 var latestTogetherRetry = time.Date(9999, 12, 31, 23, 59, 59, 999999000, time.UTC)
 
+// togetherRetryNotBefore returns the latest retry instant declared by Together response headers.
 // Together documents x-ratelimit-reset as seconds to wait, NOT an epoch:
 // https://docs.together.ai/docs/rate-limits (reviewed 2026-09-26).
 // Combine every header value by maximum; never cap a valid delay downward.
@@ -34,6 +35,7 @@ func togetherRetryNotBefore(headers http.Header, now time.Time) time.Time {
 	return latest
 }
 
+// togetherDelay parses one Together retry-delay header value.
 func togetherDelay(value string, now time.Time, fractional bool) time.Time {
 	whole, fraction, hasFraction := strings.Cut(value, ".")
 	if whole == "" || hasFraction && (!fractional || fraction == "") {

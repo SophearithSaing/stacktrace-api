@@ -7,6 +7,7 @@ import (
 	"github.com/SophearithSaing/stacktrace-api/internal/app"
 )
 
+// publicationRecentContent loads the bounded recent-content window used for publication safety.
 // The publisher settings lock serializes its publications. Read the full bounded
 // safety window here, not the possibly trimmed provider context snapshot.
 func (q *Queries) publicationRecentContent(ctx context.Context, agent app.ID) ([]app.Content, error) {

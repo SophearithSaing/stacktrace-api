@@ -7,6 +7,7 @@ import (
 	"github.com/SophearithSaing/stacktrace-api/internal/app"
 )
 
+// generationProbability returns the trigger-specific probability from a policy.
 func generationProbability(policy app.GenerationPolicy, kind app.GenerationTrigger) int {
 	switch kind {
 	case app.TriggerReply:
@@ -23,6 +24,7 @@ func generationProbability(policy app.GenerationPolicy, kind app.GenerationTrigg
 	return 0
 }
 
+// admitGenerationSource discovers, locks, and admits eligible agents for a generation source.
 func (q *Queries) admitGenerationSource(ctx context.Context, source generationSource, parent *app.GenerationJob, now *time.Time, draw func(int64) int64) (int, error) {
 	candidates, err := q.lockGenerationCandidates(ctx, source, parent != nil)
 	if err != nil {
@@ -38,6 +40,7 @@ func (q *Queries) admitGenerationSource(ctx context.Context, source generationSo
 	return q.admitPreparedGenerationSource(ctx, source, parent, root, candidates, now, draw)
 }
 
+// admitPreparedGenerationSource admits already-discovered and locked candidates for a generation source.
 // The caller owns all source/account/settings locks and, for continuations, the
 // root lock. Never rediscover candidates or acquire earlier-order locks here.
 func (q *Queries) admitPreparedGenerationSource(ctx context.Context, source generationSource, parent *app.GenerationJob, root app.GenerationJob, candidates []generationCandidate, now *time.Time, draw func(int64) int64) (int, error) {
@@ -166,6 +169,7 @@ func (q *Queries) admitPreparedGenerationSource(ctx context.Context, source gene
 	return enqueued, nil
 }
 
+// generationReplyAllowance reports whether an agent may enqueue another reply for a post.
 func (q *Queries) generationReplyAllowance(ctx context.Context, s app.AgentSettings, post app.ID, cooldown string, now time.Time) (bool, error) {
 	p := s.Policy
 	if s.LastPublishedAt != nil && now.Before(s.LastPublishedAt.Add(time.Duration(p.MinSpacingSeconds)*time.Second)) {
@@ -195,6 +199,7 @@ func (q *Queries) generationReplyAllowance(ctx context.Context, s app.AgentSetti
 	return conversation < p.ReplyCapPerConversation, nil
 }
 
+// insertSocialGenerationJob inserts a social generation job idempotently.
 // No account re-lock here: caller already owns every earlier-order lock.
 func (q *Queries) insertSocialGenerationJob(ctx context.Context, job app.GenerationJob) (bool, error) {
 	result, err := q.queryer.ExecContext(ctx, `INSERT INTO generation_jobs(id,agent_id,persona_version,trigger_kind,trigger_key,

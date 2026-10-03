@@ -36,9 +36,16 @@ type GenerationResult struct {
 	reason   string
 }
 
+// Decision returns the generation decision.
 func (r GenerationResult) Decision() GenerationDecision { return r.decision }
-func (r GenerationResult) Reason() string               { return r.reason }
+
+// Reason returns the validated skip reason.
+func (r GenerationResult) Reason() string { return r.reason }
+
+// OutputKind returns the required generation output kind.
 func (r GenerationResult) OutputKind() GenerationOutput { return r.kind }
+
+// Content returns the generated content payload.
 func (r GenerationResult) Content() Content {
 	content := r.content
 	content.Tags = append([]Tag(nil), content.Tags...)
@@ -122,6 +129,7 @@ func DecodeGenerationResult(data []byte, job GenerationJob) (GenerationResult, e
 	return r, nil
 }
 
+// validGenerationSkipReason reports whether a skip reason is allowlisted.
 func validGenerationSkipReason(reason string) bool {
 	return reason == "not_relevant" || reason == "insufficient_context" || reason == "unsafe_request" || reason == "repetition"
 }
@@ -148,6 +156,7 @@ func (r GenerationResult) Digest() string {
 	return GenerationOutputDigestVersion + ":" + hex.EncodeToString(hash.Sum(nil))
 }
 
+// validGenerationOutputDigest reports whether an output digest has canonical SHA-256 form.
 func validGenerationOutputDigest(digest string) bool {
 	hexValue, ok := strings.CutPrefix(digest, GenerationOutputDigestVersion+":")
 	decoded, err := hex.DecodeString(hexValue)
@@ -166,6 +175,7 @@ func ValidateGenerationPublicationOutput(job GenerationJob, attempt GenerationAt
 	return ValidateGenerationSafety(result, recent)
 }
 
+// generationObject decodes a strict generation JSON object with allowed keys.
 func generationObject(data []byte, allowed ...string) (map[string]json.RawMessage, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	token, err := decoder.Token()
@@ -203,6 +213,7 @@ func generationObject(data []byte, allowed ...string) (map[string]json.RawMessag
 	return fields, nil
 }
 
+// generationString decodes a required generation JSON string.
 func generationString(data []byte) (string, error) {
 	var value string
 	if len(data) == 0 || bytes.Equal(bytes.TrimSpace(data), []byte("null")) || json.Unmarshal(data, &value) != nil || !utf8.ValidString(value) || strings.ContainsAny(value, "\x00\ufffd") {

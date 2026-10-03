@@ -22,6 +22,7 @@ type demoFixture struct {
 	settings []app.AgentSettings
 }
 
+// decodeDemoFixture strictly decodes and validates embedded demonstration fixtures.
 // These operator-owned fixtures have explicit required fields, not defaults.
 // Validate both completely before starting the seed transaction.
 func decodeDemoFixture(demo, personas []byte) (demoFixture, error) {
@@ -114,6 +115,7 @@ func decodeDemoFixture(demo, personas []byte) (demoFixture, error) {
 	return fixture, nil
 }
 
+// decodeFixtureObject strictly decodes a fixture object with an exact key set.
 // Only the small fixture objects use this check. Policy decoding remains owned
 // by app. In particular encoding/json alone accepts duplicate and case-alias keys.
 func decodeFixtureObject(data []byte, target any, keys ...string) error {

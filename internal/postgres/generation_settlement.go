@@ -129,6 +129,7 @@ func (s *Store) SettleGeneration(ctx context.Context, reserved app.GenerationAtt
 	return accepted && err == nil, err
 }
 
+// sameGenerationReservation reports whether two attempts describe the same reservation.
 func sameGenerationReservation(a, b app.GenerationAttempt) bool {
 	return a.ID == b.ID && a.JobID == b.JobID && a.AttemptNumber == b.AttemptNumber && a.LeaseVersion == b.LeaseVersion &&
 		sameSettlementUsage(a.PauseRevision, b.PauseRevision) &&
@@ -136,14 +137,17 @@ func sameGenerationReservation(a, b app.GenerationAttempt) bool {
 		a.BudgetDay == b.BudgetDay && a.ReservedTokens == b.ReservedTokens && a.StartedAt.Equal(b.StartedAt)
 }
 
+// sameSettlementUsage reports whether two optional usage values match exactly.
 func sameSettlementUsage(a, b *int64) bool {
 	return a == nil && b == nil || a != nil && b != nil && *a == *b
 }
 
+// sameSettlementTime reports whether two optional settlement times match exactly.
 func sameSettlementTime(a, b *time.Time) bool {
 	return a == nil && b == nil || a != nil && b != nil && a.Equal(*b)
 }
 
+// safeGenerationRequestID validates and bounds a provider request identifier for persistence.
 // Absence is allowed (timeouts often have no response). Present IDs are bounded
 // opaque tokens, never free-form provider text or control/whitespace characters.
 func safeGenerationRequestID(id string) bool {

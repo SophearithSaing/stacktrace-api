@@ -31,8 +31,10 @@ type AuthStore interface {
 
 type Auth struct{ store AuthStore }
 
+// NewAuth creates an authentication service backed by store.
 func NewAuth(store AuthStore) *Auth { return &Auth{store: store} }
 
+// Register creates a human account and authenticated session.
 func (a *Auth) Register(ctx context.Context, username, password, displayName, previousToken string) (Account, string, error) {
 	account, err := NewAccount(AccountHuman, username, displayName, time.Now())
 	if err != nil {
@@ -54,6 +56,7 @@ func (a *Auth) Register(ctx context.Context, username, password, displayName, pr
 	return account, token, nil
 }
 
+// Login authenticates a human account and rotates its session.
 func (a *Auth) Login(ctx context.Context, username, password, previousToken string) (Account, string, error) {
 	if !validPassword(password) {
 		return Account{}, "", ErrInvalidCredentials
@@ -90,6 +93,7 @@ func (a *Auth) Login(ctx context.Context, username, password, previousToken stri
 	return account, token, nil
 }
 
+// newSession creates a session and returns its plaintext token.
 func newSession(accountID ID) (Session, string) {
 	raw := make([]byte, 32)
 	rand.Read(raw)

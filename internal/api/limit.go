@@ -22,6 +22,7 @@ type rateLimiter struct {
 	nextSweep            time.Time
 }
 
+// newRateLimiter creates a bounded in-memory fixed-window rate limiter.
 func newRateLimiter(requests int, window time.Duration, maxClients int) *rateLimiter {
 	return &rateLimiter{clients: make(map[string]rateWindow), requests: requests, window: window, maxClients: maxClients}
 }

@@ -19,10 +19,12 @@ func (s *Store) CreateAndSelectPersona(ctx context.Context, persona app.Persona)
 	})
 }
 
+// SelectAgentPersona atomically selects an existing persona as the agent's active version.
 func (s *Store) SelectAgentPersona(ctx context.Context, agentID app.ID, version int) error {
 	return s.Transaction(ctx, func(q *Queries) error { return q.SelectAgentPersona(ctx, agentID, version) })
 }
 
+// SelectAgentPersona atomically selects an existing persona as the agent's active version.
 func (q *Queries) SelectAgentPersona(ctx context.Context, agentID app.ID, version int) error {
 	ctx, cancel := q.queryContext(ctx)
 	defer cancel()
@@ -77,11 +79,13 @@ func (s *Store) SetAgentPolicy(ctx context.Context, agentID app.ID, policy app.G
 	})
 }
 
+// PauseAgent disables generation for one agent.
 func (s *Store) PauseAgent(ctx context.Context, agentID app.ID) error {
 	_, err := s.setAgentsEnabled(ctx, &agentID, false)
 	return err
 }
 
+// ResumeAgent enables generation for one validly configured agent.
 func (s *Store) ResumeAgent(ctx context.Context, agentID app.ID) error {
 	_, err := s.setAgentsEnabled(ctx, &agentID, true)
 	return err
@@ -100,6 +104,7 @@ func (s *Store) ResumeAllAgents(ctx context.Context) (int, error) {
 	return s.setAgentsEnabled(ctx, nil, true)
 }
 
+// setAgentsEnabled atomically changes generation enablement for one agent or the fleet.
 func (s *Store) setAgentsEnabled(ctx context.Context, agentID *app.ID, enabled bool) (int, error) {
 	count := 0
 	err := s.Transaction(ctx, func(q *Queries) error {
@@ -165,6 +170,7 @@ func (s *Store) setAgentsEnabled(ctx context.Context, agentID *app.ID, enabled b
 	return count, nil
 }
 
+// lockControlledAgent locks an agent account and reports whether it is active.
 func (q *Queries) lockControlledAgent(ctx context.Context, id app.ID) (bool, error) {
 	if q.lifetime == nil {
 		return false, errGenerationTransaction
@@ -184,12 +190,14 @@ func (q *Queries) lockControlledAgent(ctx context.Context, id app.ID) (bool, err
 	return disabled, nil
 }
 
+// lockControlledSettings locks and verifies an agent settings row.
 func (q *Queries) lockControlledSettings(ctx context.Context, id app.ID) error {
 	var locked app.ID
 	err := q.queryer.QueryRowContext(ctx, `SELECT agent_id FROM agent_settings WHERE agent_id=$1 FOR UPDATE`, id).Scan(&locked)
 	return databaseError(ctx, err)
 }
 
+// validateControlledResume checks that a locked agent can safely resume generation.
 func (q *Queries) validateControlledResume(ctx context.Context, id app.ID) error {
 	settings, err := q.readAgentSettings(ctx, id)
 	if err != nil {

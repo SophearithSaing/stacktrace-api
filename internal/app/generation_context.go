@@ -57,9 +57,16 @@ type GenerationContext struct {
 	kind           GenerationOutput
 }
 
-func (c GenerationContext) Instructions() string         { return c.instructions }
-func (c GenerationContext) PublicJSON() string           { return c.publicJSON }
+// Instructions returns the private persona instructions captured by the context.
+func (c GenerationContext) Instructions() string { return c.instructions }
+
+// PublicJSON returns the canonical public context JSON.
+func (c GenerationContext) PublicJSON() string { return c.publicJSON }
+
+// OutputKind returns the required generation output kind.
 func (c GenerationContext) OutputKind() GenerationOutput { return c.kind }
+
+// Matches reports whether the context is bound to job.
 func (c GenerationContext) Matches(job GenerationJob) bool {
 	return c.jobID == job.ID && c.agentID == job.AgentID && c.personaVersion == job.PersonaVersion &&
 		c.kind == job.OutputKind && c.triggerKind == job.TriggerKind &&
@@ -69,6 +76,7 @@ func (c GenerationContext) Matches(job GenerationJob) bool {
 		c.instructions != "" && c.publicJSON != ""
 }
 
+// BuildGenerationContext validates and builds an immutable generation context.
 func BuildGenerationContext(job GenerationJob, persona Persona, public PublicGenerationContext) (GenerationContext, error) {
 	if job.Validate() != nil || persona.Validate() != nil || persona.AgentID != job.AgentID || persona.Version != job.PersonaVersion {
 		return GenerationContext{}, ErrGenerationOutput
@@ -140,6 +148,7 @@ func BuildGenerationContext(job GenerationJob, persona Persona, public PublicGen
 	}, nil
 }
 
+// normalizeGenerationContextAuthor validates and canonicalizes a context author.
 func normalizeGenerationContextAuthor(author GenerationContextAuthor) (GenerationContextAuthor, error) {
 	if len(author.Handle) > 32 {
 		return GenerationContextAuthor{}, ErrGenerationOutput
@@ -151,6 +160,7 @@ func normalizeGenerationContextAuthor(author GenerationContextAuthor) (Generatio
 	return GenerationContextAuthor{Handle: handle, Type: author.Type}, nil
 }
 
+// normalizeGenerationContextItem validates and canonicalizes a context item.
 func normalizeGenerationContextItem(item GenerationContextItem) (GenerationContextItem, error) {
 	author, err := normalizeGenerationContextAuthor(item.Author)
 	if err != nil || item.Kind != OutputPost && item.Kind != OutputQuote && item.Kind != OutputReply || item.Kind == OutputReply && item.Content.Code != nil {
@@ -163,6 +173,7 @@ func normalizeGenerationContextItem(item GenerationContextItem) (GenerationConte
 	return GenerationContextItem{Author: author, Kind: item.Kind, Content: content}, nil
 }
 
+// generationContextID returns the pointed-to identifier or the zero identifier.
 func generationContextID(id *ID) ID {
 	if id == nil {
 		return ""

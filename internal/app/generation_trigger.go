@@ -57,10 +57,12 @@ func GenerationMentions(body string) []string {
 	return handles
 }
 
+// generationEmbeddedRune reports whether a rune may continue an embedded mention.
 func generationEmbeddedRune(r rune) bool {
 	return unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r) || strings.ContainsRune("_@/\\", r)
 }
 
+// ScheduledGenerationKey returns the stable idempotency key for a scheduled slot.
 func ScheduledGenerationKey(slot time.Time) (string, error) {
 	if slot.IsZero() {
 		return "", fmt.Errorf("scheduled key requires a slot")
@@ -87,6 +89,7 @@ func GenerationCooldownKey(actorID, agentID, conversationID ID, kind GenerationT
 	return "cooldown:v1:" + string(actorID) + ":" + string(agentID) + ":" + string(conversationID) + ":" + string(kind), nil
 }
 
+// socialGenerationTrigger reports whether a trigger originates from a social action.
 func socialGenerationTrigger(kind GenerationTrigger) bool {
 	switch kind {
 	case TriggerReply, TriggerRepost, TriggerQuote, TriggerHumanPost, TriggerContinuation:

@@ -13,6 +13,7 @@ const (
 	GenerationExecutionCancelled GenerationDenial = "execution_cancelled"
 )
 
+// TerminalStatus maps the denial to its terminal job status when applicable.
 func (d GenerationDenial) TerminalStatus() (GenerationJobStatus, bool) {
 	switch d {
 	case GenerationContextRejected, GenerationPublicationDenied, GenerationPolicyDenied:

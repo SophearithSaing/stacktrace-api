@@ -7,6 +7,7 @@ import (
 	"github.com/SophearithSaing/stacktrace-api/internal/app"
 )
 
+// RegisterHuman atomically persists a human account, credential, and session.
 func (s *Store) RegisterHuman(ctx context.Context, account app.Account, passwordHash string, session app.Session, previousHash string) error {
 	if account.Type != app.AccountHuman || account.DisabledAt != nil || session.AccountID != account.ID {
 		return app.ErrForbidden
@@ -25,6 +26,7 @@ func (s *Store) RegisterHuman(ctx context.Context, account app.Account, password
 	})
 }
 
+// CredentialByHandle loads an account and password hash by normalized handle.
 func (q *Queries) CredentialByHandle(ctx context.Context, handle string) (app.Account, string, error) {
 	ctx, cancel := q.queryContext(ctx)
 	defer cancel()
@@ -39,6 +41,7 @@ func (q *Queries) CredentialByHandle(ctx context.Context, handle string) (app.Ac
 	return account, hash, databaseError(ctx, err)
 }
 
+// RotateSession atomically replaces a previous session with a new session.
 func (s *Store) RotateSession(ctx context.Context, session app.Session, previousHash string) error {
 	return s.Transaction(ctx, func(q *Queries) error {
 		queryCtx, cancel := q.queryContext(ctx)
@@ -52,6 +55,7 @@ func (s *Store) RotateSession(ctx context.Context, session app.Session, previous
 	})
 }
 
+// replaceSession replaces a previous session inside the current transaction.
 func (q *Queries) replaceSession(ctx context.Context, session app.Session, previousHash string) error {
 	if err := q.RevokeSession(ctx, previousHash); err != nil {
 		return err
@@ -62,6 +66,7 @@ func (q *Queries) replaceSession(ctx context.Context, session app.Session, previ
 	return databaseError(ctx, err)
 }
 
+// SessionAccount loads the active account associated with a session hash.
 func (q *Queries) SessionAccount(ctx context.Context, hash string) (app.Account, error) {
 	ctx, cancel := q.queryContext(ctx)
 	defer cancel()
@@ -75,6 +80,7 @@ func (q *Queries) SessionAccount(ctx context.Context, hash string) (app.Account,
 	return account, authenticationError(databaseError(ctx, err))
 }
 
+// RevokeSession revokes a session by hash.
 func (q *Queries) RevokeSession(ctx context.Context, hash string) error {
 	if hash == "" {
 		return nil
@@ -85,6 +91,7 @@ func (q *Queries) RevokeSession(ctx context.Context, hash string) error {
 	return databaseError(ctx, err)
 }
 
+// authenticationError maps storage errors to safe authentication errors.
 func authenticationError(err error) error {
 	if errors.Is(err, app.ErrNotFound) {
 		return app.ErrUnauthenticated

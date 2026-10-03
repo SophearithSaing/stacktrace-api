@@ -41,6 +41,7 @@ type lockedWriter struct {
 	err error
 }
 
+// Write writes bytes to the wrapped writer while recording the result.
 func (lw *lockedWriter) Write(p []byte) (int, error) {
 	lw.mu.Lock()
 	defer lw.mu.Unlock()
@@ -51,6 +52,7 @@ func (lw *lockedWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// failed reports whether the wrapped writer has encountered an error.
 func (lw *lockedWriter) failed() bool {
 	lw.mu.Lock()
 	defer lw.mu.Unlock()
@@ -78,18 +80,21 @@ type serveState struct {
 	lastStatusLog      time.Time
 }
 
+// setShuttingDown marks the worker as shutting down.
 func (s *serveState) setShuttingDown() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.shuttingDown = true
 }
 
+// markStorageUnhealthy marks worker storage as unhealthy.
 func (s *serveState) markStorageUnhealthy() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.storageHealthy = false
 }
 
+// recordCompletedCycle records a successfully completed worker cycle.
 func (s *serveState) recordCompletedCycle(now time.Time, summary worker.ExecutionSummary) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -106,24 +111,28 @@ func (s *serveState) recordProviderEvidence(summary worker.ExecutionSummary) {
 	s.recordProviderEvidenceLocked(summary)
 }
 
+// recordProviderEvidenceLocked updates provider health from a cycle summary while the state lock is held.
 func (s *serveState) recordProviderEvidenceLocked(summary worker.ExecutionSummary) {
 	if summary.Calls > 0 {
 		s.providerDegraded = summary.CallsSucceeded != summary.Calls
 	}
 }
 
+// providerDegradedFlag reports the worker's provider-degradation state.
 func (s *serveState) providerDegradedFlag() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.providerDegraded
 }
 
+// storageHealthyFlag reports the worker's storage-health state.
 func (s *serveState) storageHealthyFlag() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.storageHealthy
 }
 
+// takeStatusLogSlot claims the current rate-limited status-log slot.
 func (s *serveState) takeStatusLogSlot(now time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -144,6 +153,7 @@ func (s *serveState) readyLocked(now time.Time) bool {
 	return now.Sub(s.lastCompletedCycle) <= serveProgressStaleness
 }
 
+// Ready reports whether the worker and its storage are ready to serve traffic.
 func (s *serveState) Ready(ctx context.Context, store serveStore) bool {
 	s.mu.RLock()
 	if !s.readyLocked(time.Now()) {
@@ -267,6 +277,7 @@ func serveListener(ctx context.Context, store serveStore, provider app.Generatio
 	return nil
 }
 
+// serveCycles runs worker cycles until cancellation or a fatal failure.
 func serveCycles(ctx context.Context, store serveStore, provider app.GenerationProvider, logger *slog.Logger, state *serveState, output *lockedWriter) error {
 	for {
 		if err := ctx.Err(); err != nil {
@@ -322,6 +333,7 @@ func reporterFailure(logger *slog.Logger, state *serveState) error {
 	return worker.ExecutionStorage
 }
 
+// runServeCycle runs one worker cycle and records its health evidence.
 func runServeCycle(ctx context.Context, store serveStore, provider app.GenerationProvider, logger *slog.Logger, state *serveState, output *lockedWriter) error {
 	start := time.Now()
 	scheduleCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
@@ -425,6 +437,7 @@ func logGenerationStatus(ctx context.Context, store serveStore, logger *slog.Log
 	return nil
 }
 
+// formatStatusTime formats an optional status timestamp for structured logging.
 func formatStatusTime(stamp *time.Time) string {
 	if stamp == nil {
 		return ""
@@ -455,6 +468,7 @@ func safeExecutionError(err error) (worker.ExecutionError, bool) {
 	return "", false
 }
 
+// safeErrorCode returns an allowlisted worker error code.
 func safeErrorCode(err error) string {
 	if err == nil {
 		return ""

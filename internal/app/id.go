@@ -9,6 +9,7 @@ import (
 // ID is a canonical UUID string, independent of JSON and database drivers.
 type ID string
 
+// NewID returns a new random identifier.
 func NewID() ID {
 	var value [16]byte
 	rand.Read(value[:])
@@ -18,6 +19,7 @@ func NewID() ID {
 	return ID(encoded[:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:])
 }
 
+// ParseID parses a canonical identifier string.
 func ParseID(raw string) (ID, error) {
 	if len(raw) != 36 || raw[8] != '-' || raw[13] != '-' || raw[18] != '-' || raw[23] != '-' {
 		return "", ErrInvalidID

@@ -172,6 +172,7 @@ func (q *Queries) listFeed(ctx context.Context, viewer, accountID app.ID, query 
 	return page, nil
 }
 
+// feedReposters loads reposter accounts for projected feed posts.
 func (q *Queries) feedReposters(ctx context.Context, ids map[app.ID]bool) (map[app.ID]*app.Account, error) {
 	accounts := make(map[app.ID]*app.Account, len(ids))
 	if len(ids) == 0 {

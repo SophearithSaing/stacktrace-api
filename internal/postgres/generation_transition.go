@@ -16,6 +16,7 @@ func (s *Store) CompleteGeneration(ctx context.Context, id app.ID, version int64
 	return s.completeGeneration(ctx, id, version, attemptID, jitter, nil)
 }
 
+// completeGeneration settles a completed attempt and transitions its job transactionally.
 func (s *Store) completeGeneration(ctx context.Context, id app.ID, version int64, attemptID app.ID, jitter time.Duration, override *time.Time) (app.GenerationJobStatus, error) {
 	if jitter < 0 || jitter > app.MaxGenerationRetryJitter {
 		return "", invalidGeneration("jitter")

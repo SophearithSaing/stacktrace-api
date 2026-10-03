@@ -7,6 +7,7 @@ import (
 	"github.com/SophearithSaing/stacktrace-api/internal/app"
 )
 
+// finishExecutionJob persists the final state of a locked generation job.
 // Caller owns the job lock and has checked a fresh exclusive lease. This helper
 // cannot publish or reopen failed jobs; no account/settings/budget lock follows.
 func (q *Queries) finishExecutionJob(ctx context.Context, before app.GenerationJob, status app.GenerationJobStatus, reason string, now, available time.Time) error {

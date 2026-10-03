@@ -16,6 +16,7 @@ type feedEntryResponse struct {
 	Post       postResponse    `json:"post"`
 }
 
+// listFeed handles viewer feed listing requests.
 func (s *server) listFeed(w http.ResponseWriter, r *http.Request) {
 	values, err := strictQuery(r.URL.RawQuery, "view", "sort", "tag", "limit", "cursor")
 	if err != nil {
@@ -50,6 +51,7 @@ func (s *server) listFeed(w http.ResponseWriter, r *http.Request) {
 	s.writeFeedResponse(w, page, binding)
 }
 
+// listAccountFeed handles account feed listing requests.
 func (s *server) listAccountFeed(w http.ResponseWriter, r *http.Request) {
 	if r.PathValue("resource") != "feed" {
 		s.notFound(w, r)
@@ -84,6 +86,7 @@ func (s *server) listAccountFeed(w http.ResponseWriter, r *http.Request) {
 	s.writeFeedResponse(w, page, binding)
 }
 
+// feedWindow parses and validates a feed pagination window.
 func (s *server) feedWindow(values url.Values, binding feedCursorBinding) (app.FeedWindow, error) {
 	window := app.FeedWindow{Limit: app.DefaultReadLimit}
 	if raw := values.Get("limit"); raw != "" {
@@ -103,6 +106,7 @@ func (s *server) feedWindow(values url.Values, binding feedCursorBinding) (app.F
 	return window, nil
 }
 
+// writeFeedResponse writes a feed page and its continuation cursor.
 func (s *server) writeFeedResponse(w http.ResponseWriter, page app.FeedPage, binding feedCursorBinding) {
 	items := make([]feedEntryResponse, 0, len(page.Items))
 	for _, entry := range page.Items {

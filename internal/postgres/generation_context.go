@@ -24,6 +24,7 @@ func (s *Store) GenerationContext(ctx context.Context, id app.ID, version int64)
 	return built, nil
 }
 
+// generationContext builds the immutable provider context for a leased job.
 func (q *Queries) generationContext(ctx context.Context, id app.ID, version int64) (app.GenerationContext, error) {
 	ctx, cancel := q.queryContext(ctx)
 	defer cancel()
@@ -171,6 +172,7 @@ func (q *Queries) generationContext(ctx context.Context, id app.ID, version int6
 	}
 }
 
+// contextLease validates that a generation context still holds the job's lease.
 func (q *Queries) contextLease(ctx context.Context, job app.GenerationJob, version int64) error {
 	now, err := q.generationClock(ctx, nil)
 	if err != nil {
@@ -182,6 +184,7 @@ func (q *Queries) contextLease(ctx context.Context, job app.GenerationJob, versi
 	return nil
 }
 
+// contextIDs collects identifiers referenced by a public generation context.
 // Retained for the interrupted recovery/transition drafts; context hydration no
 // longer needs reference-by-reference reads.
 func contextIDs(ctx context.Context, rows *sql.Rows) ([]app.ID, error) {
@@ -197,6 +200,7 @@ func contextIDs(ctx context.Context, rows *sql.Rows) ([]app.ID, error) {
 	return ids, databaseError(ctx, rows.Err())
 }
 
+// executionPersona loads the persona version pinned to a generation job.
 func (q *Queries) executionPersona(ctx context.Context, job app.GenerationJob) (app.Persona, error) {
 	persona := app.Persona{AgentID: job.AgentID, Version: job.PersonaVersion}
 	var instructions sql.NullString
@@ -214,6 +218,7 @@ func (q *Queries) executionPersona(ctx context.Context, job app.GenerationJob) (
 	return persona, nil
 }
 
+// executionSourceValid locks and validates the canonical source for a generation job.
 // Lock only existing canonical sources, post before reply/repost. The caller
 // must not already hold job/settings/budget locks. Account state is observed,
 // not locked here; later admission owns main-agent/settings authority.

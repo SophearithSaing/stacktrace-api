@@ -14,6 +14,7 @@ import (
 	"github.com/SophearithSaing/stacktrace-api/internal/postgres"
 )
 
+// main runs the server command.
 func main() {
 	cfg, err := config.Load(config.Server)
 	if err != nil {
@@ -29,6 +30,7 @@ func main() {
 	}
 }
 
+// run opens the store and serves the configured HTTP API.
 func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	store, err := postgres.Open(ctx, cfg.DatabaseURL)
 	if err != nil {

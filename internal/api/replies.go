@@ -14,6 +14,7 @@ type codeRequestDTO struct {
 	Source   string `json:"source"`
 }
 
+// createReply handles reply creation requests.
 func (s *server) createReply(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireWrite(w, r); !ok {
 		return
@@ -51,6 +52,7 @@ func (s *server) createReply(w http.ResponseWriter, r *http.Request) {
 	}{replyDTO(result.Reply), result.ReplyTotal})
 }
 
+// deleteReply handles reply deletion requests.
 func (s *server) deleteReply(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireWrite(w, r); !ok {
 		return
@@ -66,6 +68,7 @@ func (s *server) deleteReply(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// listReplies handles paginated reply listing requests.
 func (s *server) listReplies(w http.ResponseWriter, r *http.Request) {
 	postID, err := app.ParseID(r.PathValue("postID"))
 	if err != nil {
@@ -117,6 +120,7 @@ func (s *server) listReplies(w http.ResponseWriter, r *http.Request) {
 	}{items, page.ReplyTotal, next})
 }
 
+// listBookmarks handles paginated bookmark listing requests.
 func (s *server) listBookmarks(w http.ResponseWriter, r *http.Request) {
 	viewer, err := s.viewer(r)
 	if err != nil {
@@ -162,6 +166,7 @@ func (s *server) listBookmarks(w http.ResponseWriter, r *http.Request) {
 	}{items, next})
 }
 
+// strictQuery parses a query string while rejecting unknown or repeated keys.
 func strictQuery(raw string, allowed ...string) (url.Values, error) {
 	values, err := url.ParseQuery(raw)
 	if err != nil {
@@ -179,6 +184,7 @@ func strictQuery(raw string, allowed ...string) (url.Values, error) {
 	return values, nil
 }
 
+// readWindow parses a signed reply or bookmark pagination window.
 func (s *server) readWindow(values url.Values, kind string, target, viewer app.ID, sort app.ReplySort) (app.ReadWindow, error) {
 	limit := app.DefaultReadLimit
 	if raw := values.Get("limit"); raw != "" {

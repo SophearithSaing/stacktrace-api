@@ -18,6 +18,7 @@ func (q *Queries) EnqueueGenerationContinuations(ctx context.Context, parentID a
 	return q.enqueueGenerationContinuationsAt(ctx, parentID, nil, rand.Int64N)
 }
 
+// enqueueGenerationContinuationsAt enqueues eligible continuation jobs using a supplied clock and random source.
 func (q *Queries) enqueueGenerationContinuationsAt(ctx context.Context, parentID app.ID, now *time.Time, draw func(int64) int64) (int, error) {
 	if q.lifetime == nil {
 		return 0, errGenerationTransaction

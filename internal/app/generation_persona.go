@@ -18,6 +18,7 @@ type Persona struct {
 	CreatedAt    time.Time
 }
 
+// Validate checks whether the value satisfies its domain invariants.
 func (p Persona) Validate() error {
 	if !validGenerationID(p.AgentID) || p.Version < 1 || p.Version > 2147483647 || p.CreatedAt.IsZero() {
 		return fmt.Errorf("invalid persona identity or creation time")
@@ -43,6 +44,7 @@ func (p Persona) Validate() error {
 	return nil
 }
 
+// ValidatePersonaUnchanged checks that an existing persona version was not mutated.
 func ValidatePersonaUnchanged(before, after Persona) error {
 	if err := before.Validate(); err != nil {
 		return err
@@ -72,6 +74,7 @@ type AgentSettings struct {
 	UpdatedAt       time.Time
 }
 
+// Validate checks whether the value satisfies its domain invariants.
 func (s AgentSettings) Validate() error {
 	if !validGenerationID(s.AgentID) || s.PersonaVersion < 1 || s.PersonaVersion > 2147483647 || s.UpdatedAt.IsZero() || s.PauseRevision < 0 {
 		return fmt.Errorf("invalid agent settings identity or update time")
@@ -103,15 +106,18 @@ func (s AgentSettings) Validate() error {
 	return nil
 }
 
+// validGenerationID reports whether an identifier is nonzero and canonical.
 func validGenerationID(id ID) bool {
 	parsed, err := ParseID(string(id))
 	return err == nil && parsed == id && id != "00000000-0000-0000-0000-000000000000"
 }
 
+// validGenerationText reports whether generation text is valid UTF-8 within its byte limit.
 func validGenerationText(value string, maxBytes int) bool {
 	return len(value) <= maxBytes && strings.TrimSpace(value) != "" && utf8.ValidString(value) && !strings.ContainsRune(value, 0)
 }
 
+// validGenerationDate reports whether a generation date has canonical calendar form.
 func validGenerationDate(value string) bool {
 	date, err := time.Parse(time.DateOnly, value)
 	return err == nil && date.Format(time.DateOnly) == value && date.Year() > 0

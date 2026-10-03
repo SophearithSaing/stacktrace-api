@@ -30,6 +30,7 @@ type cursorPayload struct {
 	ID       string `json:"id"`
 }
 
+// encodeCursor signs and encodes a reply pagination cursor.
 func (s *server) encodeCursor(kind string, target, viewer app.ID, sort app.ReplySort, ceiling time.Time, position *app.KeysetPosition) (*string, error) {
 	if position == nil {
 		return nil, nil
@@ -45,6 +46,7 @@ func (s *server) encodeCursor(kind string, target, viewer app.ID, sort app.Reply
 	return &token, nil
 }
 
+// decodeCursor verifies and decodes a bound reply pagination cursor.
 func (s *server) decodeCursor(token, kind string, target, viewer app.ID, sort app.ReplySort) (app.KeysetPosition, time.Time, error) {
 	if token == "" || len(token) > maxCursorBytes || strings.Count(token, ".") != 1 {
 		return app.KeysetPosition{}, time.Time{}, errInvalidCursor
@@ -94,14 +96,17 @@ func (s *server) decodeCursor(token, kind string, target, viewer app.ID, sort ap
 	return app.KeysetPosition{Timestamp: positionTime.UTC(), ID: id}, ceiling.UTC(), nil
 }
 
+// invalidCursorError returns the public invalid-cursor request error.
 func invalidCursorError() error {
 	return &requestError{status: 400, code: "invalid_cursor", message: "Cursor is invalid"}
 }
 
+// invalidQueryError returns the public invalid-query request error.
 func invalidQueryError() error {
 	return &requestError{status: 400, code: "invalid_query", message: "Query parameters are invalid"}
 }
 
+// cursorError maps cursor decoding failures to a safe request error.
 func cursorError(err error) error {
 	if errors.Is(err, errInvalidCursor) {
 		return invalidCursorError()

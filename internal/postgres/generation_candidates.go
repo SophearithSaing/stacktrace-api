@@ -16,6 +16,7 @@ type generationCandidate struct {
 	rank     int
 }
 
+// generationCandidateRank returns a candidate relevance rank for a generation source.
 func generationCandidateRank(id app.ID, handle string, tags []string, source generationSource) int {
 	if id == source.actor {
 		return -1
@@ -36,6 +37,7 @@ func generationCandidateRank(id app.ID, handle string, tags []string, source gen
 	return -1
 }
 
+// generationCandidateIDs discovers bounded candidate identifiers for a generation source.
 // Discovery scans only bounded IDs/handles/topics, never full persona prompts.
 // Optional oversized fleets fail closed for triggers, not the human write.
 func (q *Queries) generationCandidateIDs(ctx context.Context, source generationSource) ([]app.ID, error) {
@@ -87,6 +89,7 @@ func (q *Queries) generationCandidateIDs(ctx context.Context, source generationS
 	return ids, nil
 }
 
+// sortGenerationCandidates orders candidates deterministically by rank and identifier.
 func sortGenerationCandidates(candidates []generationCandidate) {
 	slices.SortFunc(candidates, func(a, b generationCandidate) int {
 		if a.rank != b.rank {
@@ -102,6 +105,7 @@ func sortGenerationCandidates(candidates []generationCandidate) {
 	})
 }
 
+// lockGenerationCandidates locks candidate accounts and settings in canonical order.
 // Acquire ALL agent account locks in ID order before ANY settings lock. The
 // continuation actor is included with SHARE, never an exclusive actor upgrade.
 func (q *Queries) lockGenerationCandidates(ctx context.Context, source generationSource, continuation bool) ([]generationCandidate, error) {
@@ -113,6 +117,7 @@ func (q *Queries) lockGenerationCandidates(ctx context.Context, source generatio
 	return candidates, err
 }
 
+// lockPreparedGenerationCandidates locks and validates previously discovered generation candidates.
 // Discovery happens exactly once. Publication includes its publisher in both
 // sorted lock sets, but validates the pinned persona independently of the
 // currently selected candidate persona. No job locks may precede this helper.

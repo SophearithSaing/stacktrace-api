@@ -34,6 +34,7 @@ type feedCursorPayload struct {
 	Score     int64        `json:"score"`
 }
 
+// valid reports whether the cursor binding contains valid canonical fields.
 func (binding feedCursorBinding) valid() bool {
 	if binding.Viewer != "" && !canonicalFeedID(binding.Viewer) {
 		return false
@@ -49,11 +50,13 @@ func (binding feedCursorBinding) valid() bool {
 	}
 }
 
+// canonicalFeedID reports whether an identifier has canonical feed cursor form.
 func canonicalFeedID(id app.ID) bool {
 	parsed, err := app.ParseID(string(id))
 	return err == nil && parsed == id && id != "00000000-0000-0000-0000-000000000000"
 }
 
+// position validates and converts a feed cursor payload to its position.
 func (payload feedCursorPayload) position() (app.FeedPosition, time.Time, error) {
 	if payload.Version != 1 || !payload.feedCursorBinding.valid() || !canonicalFeedID(payload.ID) {
 		return app.FeedPosition{}, time.Time{}, errInvalidCursor
@@ -73,6 +76,7 @@ func (payload feedCursorPayload) position() (app.FeedPosition, time.Time, error)
 	return position, ceiling.UTC(), nil
 }
 
+// encodeFeedCursor signs and encodes a feed pagination cursor.
 func (s *server) encodeFeedCursor(binding feedCursorBinding, ceiling time.Time, position *app.FeedPosition) (*string, error) {
 	if position == nil {
 		return nil, nil
@@ -94,6 +98,7 @@ func (s *server) encodeFeedCursor(binding feedCursorBinding, ceiling time.Time, 
 	return &token, nil
 }
 
+// decodeFeedCursor verifies and decodes a bound feed pagination cursor.
 func (s *server) decodeFeedCursor(token string, binding feedCursorBinding) (app.FeedPosition, time.Time, error) {
 	if token == "" || len(token) > maxCursorBytes || strings.Count(token, ".") != 1 {
 		return app.FeedPosition{}, time.Time{}, errInvalidCursor

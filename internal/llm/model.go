@@ -28,6 +28,7 @@ const (
 	ReservedTokensPerCall = ContextWindowTokens + MaxOutputTokens
 )
 
+// ValidateModel checks that the provider and model are supported.
 func ValidateModel(provider, model string) error {
 	if provider != Provider || model != Model {
 		return fmt.Errorf("unsupported generation provider or model")

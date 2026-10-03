@@ -84,6 +84,7 @@ func NewHandler(store Store, clientOrigins []string, csrfSigningKey, cursorSigni
 	return s.handler()
 }
 
+// newServer creates the infrastructure-only API server used by probes.
 func newServer(ready func(context.Context) error, logger *slog.Logger) *server {
 	s := &server{
 		mux: http.NewServeMux(), logger: logger,
@@ -110,6 +111,7 @@ func newServer(ready func(context.Context) error, logger *slog.Logger) *server {
 	return s
 }
 
+// notFound writes a route-aware not-found or method-not-allowed response.
 // Let ServeMux resolve allowed methods instead of registering overlapping
 // methodless wildcard patterns (by-handle/{handle} and {id}/follow overlap).
 func (s *server) notFound(w http.ResponseWriter, r *http.Request) {
@@ -141,6 +143,7 @@ func (s *server) routeExists(r *http.Request) bool {
 	return strings.Contains(pattern, " ")
 }
 
+// methodNotAllowed returns a handler that advertises the allowed HTTP method.
 func methodNotAllowed(allow string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Allow", allow)
@@ -148,6 +151,7 @@ func methodNotAllowed(allow string) http.HandlerFunc {
 	}
 }
 
+// handler builds the server's middleware-wrapped HTTP handler.
 func (s *server) handler() http.Handler {
 	return s.middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Reject noncanonical paths rather than ServeMux's HTML redirect response.

@@ -32,10 +32,12 @@ type accountViewer struct {
 	Following bool `json:"following"`
 }
 
+// summarizeAccount converts an account to its compact HTTP representation.
 func summarizeAccount(a app.Account) accountSummary {
 	return accountSummary{a.ID, a.Type, a.Handle, a.DisplayName, a.Initials, a.StatusText, a.AppearanceKey, a.VerifiedAt != nil}
 }
 
+// writeProfile writes an account profile response.
 func writeProfile(w http.ResponseWriter, profile app.AccountProfile) {
 	a := profile.Account
 	response := accountProfile{
@@ -48,6 +50,7 @@ func writeProfile(w http.ResponseWriter, profile app.AccountProfile) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+// accountByID handles account lookup requests by identifier.
 func (s *server) accountByID(w http.ResponseWriter, r *http.Request) {
 	id, err := app.ParseID(r.PathValue("accountID"))
 	if err != nil {
@@ -67,6 +70,7 @@ func (s *server) accountByID(w http.ResponseWriter, r *http.Request) {
 	writeProfile(w, profile)
 }
 
+// accountByHandle handles account lookup requests by handle.
 func (s *server) accountByHandle(w http.ResponseWriter, r *http.Request) {
 	handle, err := app.NormalizeHandle(r.PathValue("handle"))
 	if err != nil {
@@ -86,6 +90,7 @@ func (s *server) accountByHandle(w http.ResponseWriter, r *http.Request) {
 	writeProfile(w, profile)
 }
 
+// follow handles account follow state-change requests.
 func (s *server) follow(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireWrite(w, r); !ok {
 		return

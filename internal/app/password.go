@@ -22,10 +22,12 @@ var passwordSlots = make(chan struct{}, 2)
 // A valid PHC record used for the same expensive verification on absent accounts.
 const dummyPasswordHash = passwordPrefix + "AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
+// validPassword reports whether a password satisfies byte and UTF-8 bounds.
 func validPassword(password string) bool {
 	return len(password) >= 12 && len(password) <= 1024 && utf8.ValidString(password)
 }
 
+// passwordKey derives a password key with bounded Argon2 concurrency.
 func passwordKey(ctx context.Context, password string, salt []byte) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -43,6 +45,7 @@ func passwordKey(ctx context.Context, password string, salt []byte) ([]byte, err
 	return key, nil
 }
 
+// hashPassword returns an encoded hash for a valid password.
 func hashPassword(ctx context.Context, password string) (string, error) {
 	if !validPassword(password) {
 		return "", &ValidationError{Fields: map[string]string{"password": "Must contain 12-1024 UTF-8 bytes"}}
@@ -56,6 +59,7 @@ func hashPassword(ctx context.Context, password string) (string, error) {
 	return passwordPrefix + base64.RawStdEncoding.EncodeToString(salt) + "$" + base64.RawStdEncoding.EncodeToString(key), nil
 }
 
+// verifyPassword checks a password against an encoded hash.
 func verifyPassword(ctx context.Context, password, encoded string) (bool, error) {
 	if !validPassword(password) {
 		return false, nil

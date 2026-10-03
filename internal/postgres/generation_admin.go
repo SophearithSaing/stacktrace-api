@@ -57,10 +57,12 @@ func DecodeAdminCursor(token string) (AdminJobCursor, error) {
 	return AdminJobCursor{CreatedAt: at.UTC(), JobID: app.ID(parts[1])}, nil
 }
 
+// token encodes the administration cursor as a URL-safe token.
 func (c AdminJobCursor) token() string {
 	return c.CreatedAt.UTC().Format(time.RFC3339Nano) + "|" + string(c.JobID)
 }
 
+// validAdminLimit returns a bounded administration page size.
 func validAdminLimit(limit int) int {
 	if limit < 1 {
 		return adminJobPageSize
@@ -182,6 +184,7 @@ type AdminJobInspection struct {
 	Complete bool                    `json:"complete"`
 }
 
+// InspectGeneration returns one generation job with bounded attempt history.
 // InspectGenerationJob returns one bounded job with at most one page of
 // attempts, ordered by attempt number. Reads grant no authority. Complete is
 // true only when every attempt fits in the page; otherwise the result is
@@ -301,6 +304,7 @@ func countGenerationConfiguration(ctx context.Context, q *Queries) (configured, 
 	return configured, enabled, databaseError(ctx, rows.Err())
 }
 
+// dayGenerationUsage calculates conservative generation usage for one UTC day.
 func dayGenerationUsage(ctx context.Context, q *Queries, day string, agentID app.ID) (AdminDayUsage, error) {
 	ctx, cancel := q.queryContext(ctx)
 	defer cancel()
@@ -354,6 +358,7 @@ func dayGenerationUsage(ctx context.Context, q *Queries, day string, agentID app
 	return usage, databaseError(ctx, rows.Err())
 }
 
+// addInt64 adds a nonnegative value while checking for int64 overflow.
 func addInt64(target *int64, value int64) error {
 	if value > 0 && *target > math.MaxInt64-value {
 		return invalidGeneration("usage")
@@ -365,6 +370,7 @@ func addInt64(target *int64, value int64) error {
 	return nil
 }
 
+// addInt adds a nonnegative value while checking for int overflow.
 func addInt(target *int, value int) error {
 	if value > 0 && *target > math.MaxInt-value {
 		return invalidGeneration("usage")

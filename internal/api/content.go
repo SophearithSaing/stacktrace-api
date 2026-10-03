@@ -75,10 +75,12 @@ type replyPreviewResponse struct {
 	NextCursor *string         `json:"next_cursor"`
 }
 
+// replyDTO converts a reply to its HTTP response representation.
 func replyDTO(reply app.Reply) replyResponse {
 	return replyResponse{reply.ID, reply.PostID, summarizeAccount(reply.Author), reply.Body, reply.IsGenerated, formatTimestamp(reply.CreatedAt)}
 }
 
+// postDTO converts a post to its HTTP response representation.
 func (s *server) postDTO(post app.Post) (postResponse, error) {
 	tags := make([]tagResponse, 0, len(post.Content.Tags))
 	for _, tag := range post.Content.Tags {
@@ -114,6 +116,7 @@ func (s *server) postDTO(post app.Post) (postResponse, error) {
 	return response, nil
 }
 
+// formatTimestamp formats a timestamp in the API wire representation.
 func formatTimestamp(value time.Time) string {
 	return value.UTC().Format(time.RFC3339Nano)
 }

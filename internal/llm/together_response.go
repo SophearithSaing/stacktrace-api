@@ -10,6 +10,7 @@ import (
 	"github.com/SophearithSaing/stacktrace-api/internal/app"
 )
 
+// decodeTogetherCompletion strictly decodes a Together completion into a generation outcome.
 func decodeTogetherCompletion(data []byte, request app.GenerationRequest) app.GenerationOutcome {
 	outcome := app.GenerationOutcome{Failure: app.GenerationInvalidOutput}
 	if !utf8.Valid(data) {
@@ -120,6 +121,7 @@ func togetherObject(data []byte, allowed ...string) (map[string]json.RawMessage,
 	return fields, true
 }
 
+// togetherString decodes a JSON string value without accepting null.
 func togetherString(data []byte) (string, bool) {
 	var value string
 	if !togetherPresent(data) || json.Unmarshal(data, &value) != nil {
@@ -128,6 +130,7 @@ func togetherString(data []byte) (string, bool) {
 	return value, true
 }
 
+// togetherPresent reports whether a JSON value is present and non-null.
 func togetherPresent(data []byte) bool {
 	return len(data) != 0 && !bytes.Equal(bytes.TrimSpace(data), []byte("null"))
 }

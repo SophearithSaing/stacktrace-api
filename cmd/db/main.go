@@ -12,6 +12,7 @@ import (
 	"github.com/SophearithSaing/stacktrace-api/internal/postgres"
 )
 
+// main runs the db command.
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -21,6 +22,7 @@ func main() {
 	}
 }
 
+// run parses configuration and runs the requested database command.
 func run(ctx context.Context, args []string) error {
 	if len(args) != 1 || (args[0] != "ping" && args[0] != "migrate" && args[0] != "seed") {
 		return errors.New("usage: db <ping|migrate|seed>")

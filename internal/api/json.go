@@ -30,6 +30,7 @@ type requestError struct {
 	code, message string
 }
 
+// Error returns the error's safe textual representation.
 func (e *requestError) Error() string { return e.message }
 
 // decodeJSON validates and decodes one UTF-8 JSON object. The API middleware
@@ -68,6 +69,7 @@ func decodeJSON(r *http.Request, destination any) error {
 	return nil
 }
 
+// writeFailure maps a domain error to a safe JSON error response.
 func writeFailure(w http.ResponseWriter, err error) {
 	var transport *requestError
 	var validation *app.ValidationError
@@ -110,10 +112,12 @@ func writeFailure(w http.ResponseWriter, err error) {
 	}
 }
 
+// writeError writes a JSON error response without field details.
 func writeError(w http.ResponseWriter, status int, code, message string) {
 	writeErrorFields(w, status, code, message, nil)
 }
 
+// writeErrorFields writes a JSON error response with optional field details.
 func writeErrorFields(w http.ResponseWriter, status int, code, message string, fields map[string]string) {
 	if recorder, ok := w.(*responseRecorder); ok {
 		recorder.failure = code
@@ -124,6 +128,7 @@ func writeErrorFields(w http.ResponseWriter, status int, code, message string, f
 	})
 }
 
+// writeJSON atomically encodes and writes a JSON response.
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	contents, err := json.Marshal(value)
 	if err != nil {

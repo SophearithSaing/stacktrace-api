@@ -72,15 +72,18 @@ func NewContent(body string, code *Code) (Content, error) {
 	return Content{Body: body, Tags: tags, Code: normalizedCode}, nil
 }
 
+// normalizeBody normalizes a content body and reports whether it remains valid.
 func normalizeBody(body string) (string, bool) {
 	body = strings.TrimSpace(body)
 	return body, validText(body, 1, MaxBodyRunes)
 }
 
+// validText reports whether text is valid UTF-8 within the byte bounds.
 func validText(value string, minimum, maximum int) bool {
 	return utf8.ValidString(value) && !strings.ContainsRune(value, 0) && utf8.RuneCountInString(value) >= minimum && utf8.RuneCountInString(value) <= maximum
 }
 
+// validCodeLanguage reports whether a code language label is valid.
 func validCodeLanguage(value string) bool {
 	if len(value) < 1 || len(value) > 32 {
 		return false
@@ -93,6 +96,7 @@ func validCodeLanguage(value string) bool {
 	return true
 }
 
+// validFilename reports whether a code filename is valid.
 func validFilename(value string) bool {
 	if !validText(value, 1, 255) {
 		return false
@@ -132,11 +136,13 @@ func ExtractTags(body string) []Tag {
 	return tags
 }
 
+// tagPrefixRune reports whether the final prefix rune can precede a tag.
 func tagPrefixRune(prefix string) bool {
 	character, _ := utf8.DecodeLastRuneInString(prefix)
 	return character == '#' || character == '_' || unicode.IsLetter(character) || unicode.IsDigit(character)
 }
 
+// isTagCharacter reports whether a byte is allowed in a tag body.
 func isTagCharacter(character byte) bool {
 	return character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '_'
 }
@@ -151,10 +157,12 @@ const (
 	ReactionShip      ReactionKind = "ship"
 )
 
+// Valid reports whether the value is a recognized enum member.
 func (kind ReactionKind) Valid() bool {
 	return kind == ReactionUseful || kind == ReactionAgree || kind == ReactionBrilliant || kind == ReactionSpicy || kind == ReactionShip
 }
 
+// ParseReactionKind parses a supported reaction kind.
 func ParseReactionKind(value string) (ReactionKind, error) {
 	kind := ReactionKind(value)
 	if !kind.Valid() {
@@ -290,6 +298,7 @@ type PostCreation struct {
 	QuotedPostID *ID
 }
 
+// NewPostCreation validates and constructs a post creation request.
 func NewPostCreation(body string, quotedPostID *ID, code *Code) (PostCreation, error) {
 	content, err := NewContent(body, code)
 	if err != nil {
@@ -314,6 +323,7 @@ type ReplyCreation struct {
 	Body   string
 }
 
+// NewReplyCreation validates and constructs a reply creation request.
 func NewReplyCreation(postID ID, body string) (ReplyCreation, error) {
 	parsedID, err := ParseID(string(postID))
 	if err != nil {
@@ -326,6 +336,7 @@ func NewReplyCreation(postID ID, body string) (ReplyCreation, error) {
 	return ReplyCreation{PostID: parsedID, Body: body}, nil
 }
 
+// ValidateIdempotencyKey checks that an idempotency key is well formed.
 func ValidateIdempotencyKey(key string) error {
 	if len(key) < 1 || len(key) > 128 {
 		return ErrInvalidIdempotencyKey
@@ -338,14 +349,17 @@ func ValidateIdempotencyKey(key string) error {
 	return nil
 }
 
+// RequestHash returns a stable hash of the creation request.
 func (creation PostCreation) RequestHash() string {
 	return hashCreation("POST /posts", creation.Content, creation.QuotedPostID, nil)
 }
 
+// RequestHash returns a stable hash of the creation request.
 func (creation ReplyCreation) RequestHash() string {
 	return hashCreation("POST /posts/{postID}/replies", Content{Body: creation.Body}, nil, &creation.PostID)
 }
 
+// hashCreation returns the stable hash shared by content creation requests.
 func hashCreation(operation string, content Content, quoteID, replyPostID *ID) string {
 	hash := sha256.New()
 	writeHashField(hash, "stacktrace-content-v1")
@@ -364,6 +378,7 @@ func hashCreation(operation string, content Content, quoteID, replyPostID *ID) s
 	return hex.EncodeToString(hash.Sum(nil))
 }
 
+// writeOptionalID adds an optional identifier to a request hash.
 func writeOptionalID(hash interface{ Write([]byte) (int, error) }, id *ID) {
 	if id == nil {
 		writeHashField(hash, "")
@@ -373,6 +388,7 @@ func writeOptionalID(hash interface{ Write([]byte) (int, error) }, id *ID) {
 	writeHashField(hash, string(*id))
 }
 
+// writeHashField adds one length-delimited field to a request hash.
 func writeHashField(hash interface{ Write([]byte) (int, error) }, value string) {
 	hash.Write([]byte{byte(len(value) >> 24), byte(len(value) >> 16), byte(len(value) >> 8), byte(len(value))})
 	hash.Write([]byte(value))

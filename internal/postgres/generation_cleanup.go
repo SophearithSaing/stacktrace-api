@@ -9,6 +9,7 @@ import (
 
 const generationCleanupBatch = 32
 
+// generationClock returns database time or a deterministic test override.
 func (q *Queries) generationClock(ctx context.Context, override *time.Time) (time.Time, error) {
 	if override != nil {
 		return app.GenerationInstant(*override), nil
@@ -77,6 +78,7 @@ func (s *Store) expireGenerationJobs(ctx context.Context, now *time.Time) (int, 
 	return expired, nil
 }
 
+// skipExpiredGenerationJob transitions a locked expired job to its skipped state.
 // Caller owns the job lock. Keep the observed fence and all immutable identity,
 // attribution and expiry fields; cleanup never renews or increments a lease.
 func (q *Queries) skipExpiredGenerationJob(ctx context.Context, before app.GenerationJob, now time.Time) error {

@@ -10,6 +10,7 @@ import (
 
 var errGenerationTransaction = errors.New("generation writes require a transaction")
 
+// invalidGeneration returns a generation validation error for field.
 func invalidGeneration(field string) error {
 	return &app.ValidationError{Fields: map[string]string{field: "Invalid generation configuration or record"}}
 }
@@ -31,6 +32,7 @@ func (q *Queries) lockGenerationAgent(ctx context.Context, id app.ID) error {
 	return nil
 }
 
+// CreatePersona creates an immutable persona version transactionally.
 func (s *Store) CreatePersona(ctx context.Context, persona app.Persona) error {
 	return s.Transaction(ctx, func(q *Queries) error { return q.CreatePersona(ctx, persona) })
 }
@@ -56,6 +58,7 @@ func (q *Queries) CreatePersona(ctx context.Context, persona app.Persona) error 
 	return databaseError(ctx, err)
 }
 
+// PersonaByVersion loads an immutable persona version for an agent.
 func (q *Queries) PersonaByVersion(ctx context.Context, agentID app.ID, version int) (app.Persona, error) {
 	ctx, cancel := q.queryContext(ctx)
 	defer cancel()
@@ -74,6 +77,7 @@ func (q *Queries) PersonaByVersion(ctx context.Context, agentID app.ID, version 
 	return persona, nil
 }
 
+// InitializeAgentSettings creates initial generation settings transactionally.
 func (s *Store) InitializeAgentSettings(ctx context.Context, settings app.AgentSettings) (app.AgentSettings, error) {
 	var saved app.AgentSettings
 	err := s.Transaction(ctx, func(q *Queries) error {
@@ -116,6 +120,7 @@ func (q *Queries) InitializeAgentSettings(ctx context.Context, settings app.Agen
 	return q.AgentSettingsByID(ctx, settings.AgentID)
 }
 
+// AgentSettingsByID loads validated generation settings for an agent.
 func (q *Queries) AgentSettingsByID(ctx context.Context, agentID app.ID) (app.AgentSettings, error) {
 	settings, err := q.readAgentSettings(ctx, agentID)
 	var invalid *app.ValidationError
@@ -125,6 +130,7 @@ func (q *Queries) AgentSettingsByID(ctx context.Context, agentID app.ID) (app.Ag
 	return settings, err
 }
 
+// readAgentSettings loads agent settings without remapping malformed trusted configuration.
 // Keep malformed configuration distinct from database failure for trusted
 // controls. Public/internal readers retain the existing unavailable contract.
 func (q *Queries) readAgentSettings(ctx context.Context, agentID app.ID) (app.AgentSettings, error) {
@@ -149,6 +155,7 @@ func (q *Queries) readAgentSettings(ctx context.Context, agentID app.ID) (app.Ag
 	return settings, nil
 }
 
+// CreateGenerationJob inserts a validated generation job transactionally.
 func (s *Store) CreateGenerationJob(ctx context.Context, job app.GenerationJob) error {
 	return s.Transaction(ctx, func(q *Queries) error { return q.CreateGenerationJob(ctx, job) })
 }
@@ -179,6 +186,7 @@ func (q *Queries) CreateGenerationJob(ctx context.Context, job app.GenerationJob
 	return databaseError(ctx, err)
 }
 
+// GenerationJobByID loads and validates a generation job by identifier.
 func (q *Queries) GenerationJobByID(ctx context.Context, id app.ID) (app.GenerationJob, error) {
 	ctx, cancel := q.queryContext(ctx)
 	defer cancel()

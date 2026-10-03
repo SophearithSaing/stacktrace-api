@@ -19,6 +19,7 @@ func (s *Store) ClaimGeneration(ctx context.Context) (*app.GenerationJob, error)
 	return s.claimGeneration(ctx, nil)
 }
 
+// claimGeneration claims the next eligible generation job transactionally.
 func (s *Store) claimGeneration(ctx context.Context, override *time.Time) (*app.GenerationJob, error) {
 	var claimed *app.GenerationJob
 	err := s.Transaction(ctx, func(q *Queries) error {
@@ -92,6 +93,7 @@ func (s *Store) RenewGeneration(ctx context.Context, id app.ID, version int64) (
 	return s.renewGeneration(ctx, id, version, nil)
 }
 
+// renewGeneration renews a matching generation lease transactionally.
 func (s *Store) renewGeneration(ctx context.Context, id app.ID, version int64, override *time.Time) (time.Time, error) {
 	var expiry time.Time
 	err := s.Transaction(ctx, func(q *Queries) error {
@@ -131,6 +133,7 @@ func (s *Store) renewGeneration(ctx context.Context, id app.ID, version int64, o
 	return expiry, nil
 }
 
+// generationClaimMutation validates the result of a fenced claim mutation.
 func generationClaimMutation(ctx context.Context, result sql.Result, err error) error {
 	if err != nil {
 		return databaseError(ctx, err)
@@ -145,6 +148,7 @@ func generationClaimMutation(ctx context.Context, result sql.Result, err error) 
 	return nil
 }
 
+// lockExecutionJob locks and loads a generation job after earlier authority locks.
 // Caller must acquire any source/account/settings/budget/root locks BEFORE this.
 // Job-only operations must never acquire those earlier-order locks afterward.
 func (q *Queries) lockExecutionJob(ctx context.Context, id app.ID) (app.GenerationJob, error) {

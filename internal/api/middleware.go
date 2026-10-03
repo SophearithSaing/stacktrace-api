@@ -21,6 +21,7 @@ type responseRecorder struct {
 	failure string
 }
 
+// WriteHeader records an HTTP status before forwarding it to the wrapped response writer.
 func (w *responseRecorder) WriteHeader(status int) {
 	if w.status != 0 {
 		return
@@ -29,6 +30,7 @@ func (w *responseRecorder) WriteHeader(status int) {
 	w.ResponseWriter.WriteHeader(status)
 }
 
+// Write writes bytes to the wrapped writer while recording the result.
 func (w *responseRecorder) Write(contents []byte) (int, error) {
 	if w.status == 0 {
 		w.WriteHeader(http.StatusOK)
@@ -36,8 +38,10 @@ func (w *responseRecorder) Write(contents []byte) (int, error) {
 	return w.ResponseWriter.Write(contents)
 }
 
+// Unwrap returns the underlying HTTP response writer.
 func (w *responseRecorder) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
+// middleware wraps an HTTP handler with request safeguards and observability.
 func (s *server) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()

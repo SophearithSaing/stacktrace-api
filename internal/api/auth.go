@@ -18,6 +18,7 @@ type meResponse struct {
 	CSRFToken *string         `json:"csrf_token"`
 }
 
+// register handles account registration requests.
 func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	if !s.credentialAttempt(w, r) {
 		return
@@ -44,6 +45,7 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	s.writeMe(w, http.StatusCreated, account, token)
 }
 
+// login handles login requests.
 func (s *server) login(w http.ResponseWriter, r *http.Request) {
 	if !s.credentialAttempt(w, r) {
 		return
@@ -68,11 +70,13 @@ func (s *server) login(w http.ResponseWriter, r *http.Request) {
 	s.writeMe(w, http.StatusOK, account, token)
 }
 
+// writeMe writes an authenticated account response and session cookie.
 func (s *server) writeMe(w http.ResponseWriter, status int, account app.Account, token string) {
 	summary, csrf := summarizeAccount(account), s.csrfToken(token)
 	writeJSON(w, status, meResponse{Account: &summary, CSRFToken: &csrf})
 }
 
+// me handles current-account requests.
 func (s *server) me(w http.ResponseWriter, r *http.Request) {
 	account, err := s.viewer(r)
 	if err != nil {
@@ -86,6 +90,7 @@ func (s *server) me(w http.ResponseWriter, r *http.Request) {
 	s.writeMe(w, http.StatusOK, account, s.sessionToken(r))
 }
 
+// logout handles session revocation requests.
 func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireWrite(w, r); !ok {
 		return
@@ -98,6 +103,7 @@ func (s *server) logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// viewer returns the authenticated viewer, treating stale sessions as anonymous.
 // A stale/expired/disabled session is anonymous on public reads; outages are not.
 func (s *server) viewer(r *http.Request) (app.Account, error) {
 	token := s.sessionToken(r)
@@ -111,6 +117,7 @@ func (s *server) viewer(r *http.Request) (app.Account, error) {
 	return account, err
 }
 
+// requireWrite authenticates and authorizes a state-changing request.
 func (s *server) requireWrite(w http.ResponseWriter, r *http.Request) (app.Account, bool) {
 	if !s.trustedOrigin(r) {
 		writeFailure(w, app.ErrForbidden)
@@ -135,6 +142,7 @@ func (s *server) requireWrite(w http.ResponseWriter, r *http.Request) (app.Accou
 	return account, true
 }
 
+// credentialAttempt applies the connection-scoped credential rate limit.
 func (s *server) credentialAttempt(w http.ResponseWriter, r *http.Request) bool {
 	if !s.trustedOrigin(r) {
 		writeFailure(w, app.ErrForbidden)
@@ -144,6 +152,7 @@ func (s *server) credentialAttempt(w http.ResponseWriter, r *http.Request) bool 
 	return allowRate(w, s.credentialIPLimiter, peer.Addr().Unmap().String())
 }
 
+// allowUsername applies the username-scoped credential rate limit.
 func (s *server) allowUsername(w http.ResponseWriter, username string) bool {
 	handle, _ := app.NormalizeHandle(username)
 	// Keep bounded, normalized keys without retaining submitted usernames.
@@ -151,6 +160,7 @@ func (s *server) allowUsername(w http.ResponseWriter, username string) bool {
 	return allowRate(w, s.usernameLimiter, hex.EncodeToString(hash[:]))
 }
 
+// allowRate applies a rate limit and writes a rejection when the key is limited.
 func allowRate(w http.ResponseWriter, limiter *rateLimiter, key string) bool {
 	if retry := limiter.allow(key, time.Now()); retry > 0 {
 		w.Header().Set("Retry-After", strconv.Itoa(max(1, int((retry+time.Second-1)/time.Second))))

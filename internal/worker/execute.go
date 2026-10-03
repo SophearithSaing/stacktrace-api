@@ -22,6 +22,7 @@ const (
 // never cross the reporting boundary.
 type ExecutionError string
 
+// Error returns the error's safe textual representation.
 func (e ExecutionError) Error() string { return string(e) }
 
 const (
@@ -60,6 +61,7 @@ func Execute(ctx context.Context, store ExecutionStore, provider app.GenerationP
 	return execute(ctx, store, provider, renewInterval)
 }
 
+// execute runs one bounded worker execution pass.
 func execute(ctx context.Context, store ExecutionStore, provider app.GenerationProvider, interval time.Duration) (ExecutionSummary, error) {
 	ctx, cancel := context.WithTimeout(ctx, ExecutionTimeout)
 	defer cancel()
@@ -88,6 +90,7 @@ type execution struct {
 	summary  ExecutionSummary
 }
 
+// run runs the worker execution state machine to completion.
 func (r *execution) run(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -124,6 +127,7 @@ func (r *execution) run(ctx context.Context) error {
 	return ctx.Err()
 }
 
+// durableStop returns a safe execution error for a durable attempt failure.
 func durableStop(attempt *app.GenerationAttempt) error {
 	if attempt == nil || attempt.Status == app.AttemptReserved || attempt.Status == app.AttemptSucceeded {
 		return nil
@@ -153,6 +157,7 @@ func durableStopAccounting(attempt *app.GenerationAttempt) error {
 	return nil
 }
 
+// job executes one claimed generation job.
 func (r *execution) job(ctx context.Context, job app.GenerationJob) error {
 	prior, err := r.store.LatestGenerationAttempt(ctx, job.ID)
 	if err != nil {
@@ -281,6 +286,7 @@ func (r *execution) call(ctx context.Context, request app.GenerationRequest) (ap
 	return outcome, leaseErr
 }
 
+// cancelled settles a provider attempt interrupted by cancellation.
 // Cancellation settlement has one separate total cleanup budget. An uncertain
 // call always retains full cost, even if a late provider returns success/usage.
 func (r *execution) cancelled(job app.GenerationJob, attempt app.GenerationAttempt, acknowledge bool) error {
@@ -299,6 +305,7 @@ func (r *execution) cancelled(job app.GenerationJob, attempt app.GenerationAttem
 	return nil
 }
 
+// finish settles a provider outcome and advances the generation job.
 func (r *execution) finish(ctx context.Context, job app.GenerationJob, reserved app.GenerationAttempt, outcome app.GenerationOutcome) error {
 	accepted, err := r.store.SettleGeneration(ctx, reserved, outcome, outcome.ProviderRequestID)
 	if err != nil {
@@ -335,6 +342,7 @@ func (r *execution) finish(ctx context.Context, job app.GenerationJob, reserved 
 	return nil
 }
 
+// complete completes a generated job after provider settlement.
 func (r *execution) complete(ctx context.Context, job app.GenerationJob, attemptID app.ID) (app.GenerationJobStatus, error) {
 	status, err := r.store.CompleteGeneration(ctx, job.ID, job.LeaseVersion, attemptID, time.Duration(rand.Int64N(int64(app.MaxGenerationRetryJitter)+1)))
 	if errors.Is(err, app.ErrConflict) {
@@ -347,6 +355,7 @@ func (r *execution) complete(ctx context.Context, job app.GenerationJob, attempt
 	return status, err
 }
 
+// deny persists a generation denial and updates the execution summary.
 func (r *execution) deny(ctx context.Context, job app.GenerationJob, reason app.GenerationDenial) error {
 	status, err := r.store.DenyGeneration(ctx, job.ID, job.LeaseVersion, reason)
 	if errors.Is(err, app.ErrConflict) {
@@ -359,6 +368,7 @@ func (r *execution) deny(ctx context.Context, job app.GenerationJob, reason app.
 	return err
 }
 
+// rejection classifies a rejected job operation and records its denial.
 func (r *execution) rejection(ctx context.Context, job app.GenerationJob, err error, publication bool) error {
 	switch {
 	case errors.Is(err, app.ErrDeleted), errors.Is(err, app.ErrNotFound):
@@ -381,6 +391,7 @@ func (r *execution) rejection(ctx context.Context, job app.GenerationJob, err er
 	}
 }
 
+// count adds a terminal job status to the execution summary.
 func (r *execution) count(status app.GenerationJobStatus) {
 	switch status {
 	case app.JobSucceeded:

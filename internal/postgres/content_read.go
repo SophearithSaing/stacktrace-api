@@ -9,6 +9,7 @@ import (
 	"github.com/SophearithSaing/stacktrace-api/internal/app"
 )
 
+// PostByID loads and hydrates a visible post for a viewer.
 func (s *Store) PostByID(ctx context.Context, id, viewer app.ID) (app.Post, error) {
 	parsed, err := app.ParseID(string(id))
 	if err != nil {
@@ -143,6 +144,7 @@ type accountNulls struct {
 	verifiedAt, createdAt, updatedAt, disabledAt                                          sql.NullTime
 }
 
+// account converts nullable database account fields into a domain account.
 func (a accountNulls) account() app.Account {
 	var appearance *string
 	if a.appearanceKey.Valid {
@@ -161,6 +163,7 @@ func (a accountNulls) account() app.Account {
 	return app.Account{ID: app.ID(a.id.String), Type: app.AccountType(a.accountType.String), Handle: a.handle.String, DisplayName: a.displayName.String, Initials: a.initials.String, Bio: a.bio.String, RoleLabel: a.roleLabel.String, StatusText: a.statusText.String, Specialty: a.specialty.String, AppearanceKey: appearance, VerifiedAt: verified, CreatedAt: a.createdAt.Time.UTC(), UpdatedAt: a.updatedAt.Time.UTC(), DisabledAt: disabled}
 }
 
+// hydrateTags attaches tags to a bounded set of projected posts.
 func (q *Queries) hydrateTags(ctx context.Context, ids []string, posts map[app.ID]*app.Post) error {
 	queryCtx, cancel := q.queryContext(ctx)
 	defer cancel()
@@ -195,6 +198,7 @@ func (q *Queries) hydrateTags(ctx context.Context, ids []string, posts map[app.I
 	return nil
 }
 
+// hydrateCounts attaches aggregate interaction counts to projected posts.
 func (q *Queries) hydrateCounts(ctx context.Context, ids []string, posts map[app.ID]*app.Post) error {
 	queryCtx, cancel := q.queryContext(ctx)
 	defer cancel()
@@ -222,6 +226,7 @@ func (q *Queries) hydrateCounts(ctx context.Context, ids []string, posts map[app
 	return databaseError(queryCtx, rows.Err())
 }
 
+// hydrateViewer attaches viewer-specific interaction state to projected posts.
 func (q *Queries) hydrateViewer(ctx context.Context, ids []string, viewer app.ID, posts map[app.ID]*app.Post) error {
 	if viewer == "" {
 		return nil
@@ -263,6 +268,7 @@ func (q *Queries) hydrateViewer(ctx context.Context, ids []string, viewer app.ID
 	return databaseError(queryCtx, rows.Err())
 }
 
+// hydrateReplyPreviews attaches bounded reply previews to projected posts.
 func (q *Queries) hydrateReplyPreviews(ctx context.Context, ids []string, posts map[app.ID]*app.Post) error {
 	queryCtx, cancel := q.queryContext(ctx)
 	defer cancel()
@@ -313,6 +319,7 @@ func (q *Queries) hydrateReplyPreviews(ctx context.Context, ids []string, posts 
 	return nil
 }
 
+// ListReplies returns one validated keyset page of visible replies.
 func (s *Store) ListReplies(ctx context.Context, postID app.ID, window app.ReadWindow) (app.ReplyPage, error) {
 	parsed, err := app.ParseID(string(postID))
 	if err != nil {
@@ -388,6 +395,7 @@ func (s *Store) ListReplies(ctx context.Context, postID app.ID, window app.ReadW
 	return page, err
 }
 
+// validateReadWindow normalizes and validates a reply pagination window.
 func validateReadWindow(window app.ReadWindow) (app.ReadWindow, error) {
 	if window.Sort == "" {
 		window.Sort = app.ReplySortOldest

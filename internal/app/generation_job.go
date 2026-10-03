@@ -69,6 +69,7 @@ type GenerationJob struct {
 	FinishedAt         *time.Time
 }
 
+// Validate checks whether the value satisfies its domain invariants.
 func (j GenerationJob) Validate() error {
 	if !validGenerationID(j.ID) || !validGenerationID(j.AgentID) || !validGenerationID(j.RootJobID) || j.PersonaVersion < 1 || j.PersonaVersion > 2147483647 {
 		return fmt.Errorf("invalid job identity")
@@ -304,6 +305,7 @@ func ValidateGenerationJobTransition(before, after GenerationJob, expectedVersio
 	return nil
 }
 
+// sameGenerationJobIdentity reports whether two jobs have the same immutable identity.
 func sameGenerationJobIdentity(a, b GenerationJob) bool {
 	return a.ID == b.ID && a.AgentID == b.AgentID && a.PersonaVersion == b.PersonaVersion &&
 		a.TriggerKind == b.TriggerKind && a.TriggerKey == b.TriggerKey &&
@@ -334,8 +336,10 @@ func ValidateGenerationContinuation(root, parent, child GenerationJob) error {
 	return nil
 }
 
+// sameGenerationID reports whether two optional generation identifiers match.
 func sameGenerationID(a, b *ID) bool { return a == nil && b == nil || a != nil && b != nil && *a == *b }
 
+// validGenerationCode reports whether a generation error or denial code is safe and bounded.
 func validGenerationCode(value string) bool {
 	if len(value) < 1 || len(value) > 64 {
 		return false

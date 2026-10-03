@@ -10,11 +10,13 @@ import (
 	"github.com/SophearithSaing/stacktrace-api/internal/worker"
 )
 
+// execute runs one bounded worker execution pass.
 func execute(ctx context.Context, store worker.ExecutionStore, provider app.GenerationProvider, output io.Writer) error {
 	result, err := worker.Execute(ctx, store, provider)
 	return reportExecution(output, result, err)
 }
 
+// reportExecution writes a safe worker execution report.
 func reportExecution(output io.Writer, result worker.ExecutionSummary, executionErr error) error {
 	state := "complete"
 	var safeErr error

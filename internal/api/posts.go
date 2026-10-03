@@ -6,6 +6,7 @@ import (
 	"github.com/SophearithSaing/stacktrace-api/internal/app"
 )
 
+// createPost handles post creation requests.
 func (s *server) createPost(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireWrite(w, r); !ok {
 		return
@@ -47,6 +48,7 @@ func (s *server) createPost(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, response)
 }
 
+// getPost handles post lookup requests.
 func (s *server) getPost(w http.ResponseWriter, r *http.Request) {
 	id, err := app.ParseID(r.PathValue("postID"))
 	if err != nil {
@@ -66,6 +68,7 @@ func (s *server) getPost(w http.ResponseWriter, r *http.Request) {
 	s.writePostResponse(w, http.StatusOK, post)
 }
 
+// deletePost handles post deletion requests.
 func (s *server) deletePost(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireWrite(w, r); !ok {
 		return
@@ -81,6 +84,7 @@ func (s *server) deletePost(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// reaction handles reaction state-change requests.
 func (s *server) reaction(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireWrite(w, r); !ok {
 		return
@@ -108,6 +112,7 @@ func (s *server) reaction(w http.ResponseWriter, r *http.Request) {
 	s.writePostResponse(w, http.StatusOK, post)
 }
 
+// repost handles repost state-change requests.
 func (s *server) repost(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireWrite(w, r); !ok {
 		return
@@ -140,6 +145,7 @@ func (s *server) repost(w http.ResponseWriter, r *http.Request) {
 	}{postDTO, entryID, occurredAt})
 }
 
+// bookmark handles bookmark state-change requests.
 func (s *server) bookmark(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireWrite(w, r); !ok {
 		return
@@ -157,6 +163,7 @@ func (s *server) bookmark(w http.ResponseWriter, r *http.Request) {
 	s.writePostResponse(w, http.StatusOK, post)
 }
 
+// writePostResponse projects and writes a post response.
 func (s *server) writePostResponse(w http.ResponseWriter, status int, post app.Post) {
 	response, err := s.postDTO(post)
 	if err != nil {
@@ -166,6 +173,7 @@ func (s *server) writePostResponse(w http.ResponseWriter, status int, post app.P
 	writeJSON(w, status, response)
 }
 
+// idempotencyKey reads and validates the request's idempotency key.
 func idempotencyKey(r *http.Request) (string, error) {
 	values := r.Header.Values("Idempotency-Key")
 	if len(values) != 1 || app.ValidateIdempotencyKey(values[0]) != nil {

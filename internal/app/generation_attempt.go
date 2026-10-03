@@ -47,6 +47,7 @@ type GenerationAttempt struct {
 	FinishedAt     *time.Time
 }
 
+// Validate checks whether the value satisfies its domain invariants.
 func (a GenerationAttempt) Validate() error {
 	if !validGenerationID(a.ID) || !validGenerationID(a.JobID) || a.AttemptNumber < 1 || a.AttemptNumber > 2147483647 || a.LeaseVersion < 1 {
 		return fmt.Errorf("invalid attempt identity")
@@ -112,6 +113,7 @@ func (a GenerationAttempt) Validate() error {
 	return nil
 }
 
+// AccountedTokens returns the attempt's conservatively accounted token total.
 func (a GenerationAttempt) AccountedTokens() int64 {
 	if a.Status == AttemptReserved || a.Status == AttemptUnknown || a.InputTokens == nil || a.OutputTokens == nil || a.Validate() != nil {
 		return a.ReservedTokens
@@ -119,6 +121,7 @@ func (a GenerationAttempt) AccountedTokens() int64 {
 	return *a.InputTokens + *a.OutputTokens
 }
 
+// ValidateGenerationAttemptTransition checks that an attempt transition is append-only and valid.
 // Attempt outcomes are append-only observations. This does not authorize any
 // job mutation; publication separately checks the current job's live lease.
 func ValidateGenerationAttemptTransition(before, after GenerationAttempt) error {

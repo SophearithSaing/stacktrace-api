@@ -17,6 +17,7 @@ type Store interface {
 // eligibility, provider availability, or permission to execute jobs.
 type Summary struct{ Configured, Enabled int }
 
+// Check checks storage readiness and generation configuration.
 func Check(ctx context.Context, store Store) (Summary, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

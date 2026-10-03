@@ -18,6 +18,7 @@ type generationSource struct {
 	created                             time.Time
 }
 
+// enqueueSocialGeneration enqueues generation work caused by a committed social action.
 // Caller holds the authenticated human account lock, then the source locks.
 // Only fresh writes call this hook; retry/no-op paths must not invoke it.
 func (q *Queries) enqueueSocialGeneration(ctx context.Context, kind app.GenerationTrigger, action, actor app.ID) error {
@@ -25,6 +26,7 @@ func (q *Queries) enqueueSocialGeneration(ctx context.Context, kind app.Generati
 	return err
 }
 
+// enqueueSocialGenerationAt enqueues social generation work using supplied deterministic inputs.
 func (q *Queries) enqueueSocialGenerationAt(ctx context.Context, kind app.GenerationTrigger, action, actor app.ID, now *time.Time, draw func(int64) int64) (int, error) {
 	if q.lifetime == nil {
 		return 0, errGenerationTransaction
@@ -39,6 +41,7 @@ func (q *Queries) enqueueSocialGenerationAt(ctx context.Context, kind app.Genera
 	return q.admitGenerationSource(ctx, source, nil, now, draw)
 }
 
+// generationSocialSource loads and validates the canonical source for a social trigger.
 func (q *Queries) generationSocialSource(ctx context.Context, kind app.GenerationTrigger, action app.ID) (generationSource, error) {
 	ctx, cancel := q.queryContext(ctx)
 	defer cancel()

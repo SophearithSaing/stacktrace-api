@@ -74,10 +74,12 @@ func ValidateGenerationSafety(result GenerationResult, recent []Content) error {
 	return nil
 }
 
+// generationWords normalizes text into words for repetition checks.
 func generationWords(text string) []string {
 	return strings.FieldsFunc(strings.ToLower(text), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsNumber(r) })
 }
 
+// similarGenerationWords reports whether two normalized word sequences exceed the repetition threshold.
 // Multiset adjacent-word Dice similarity >= 80%, for bodies of at least eight
 // words. Bounded 320-rune bodies keep work small; this is not semantic similarity.
 func similarGenerationWords(a, b []string) bool {

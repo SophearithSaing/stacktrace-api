@@ -16,6 +16,7 @@ import (
 	"github.com/SophearithSaing/stacktrace-api/internal/worker"
 )
 
+// main runs the worker command.
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -25,6 +26,7 @@ func main() {
 	}
 }
 
+// run parses configuration and runs the requested worker command.
 func run(ctx context.Context, args []string, output io.Writer) error {
 	if len(args) != 1 || (args[0] != "check" && args[0] != "schedule" && args[0] != "execute" && args[0] != "serve") {
 		return errors.New("usage: worker check | schedule | execute | serve (read-only preflight | bounded enqueue pass | bounded generation pass | continuous serve)")
@@ -91,6 +93,7 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 	return err
 }
 
+// reportSchedule writes a safe generation scheduling report.
 func reportSchedule(output io.Writer, result postgres.GenerationScheduleResult, scheduleErr error) error {
 	state := "complete"
 	if scheduleErr != nil {

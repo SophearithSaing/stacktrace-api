@@ -25,11 +25,19 @@ type Prompt struct {
 	hash   string
 }
 
+// System returns the system portion of the prompt.
 func (p Prompt) System() string { return p.system }
-func (p Prompt) User() string   { return p.user }
-func (p Prompt) Schema() string { return p.schema }
-func (p Prompt) Hash() string   { return p.hash }
 
+// User returns the user portion of the prompt.
+func (p Prompt) User() string { return p.user }
+
+// Schema returns the response schema portion of the prompt.
+func (p Prompt) Schema() string { return p.schema }
+
+// Hash returns the prompt's stable hash.
+func (p Prompt) Hash() string { return p.hash }
+
+// BuildPrompt builds a provider prompt from a generation request.
 func BuildPrompt(request app.GenerationRequest) (Prompt, error) {
 	if request.Job.Validate() != nil || !request.Context.Matches(request.Job) {
 		return Prompt{}, app.ErrGenerationOutput

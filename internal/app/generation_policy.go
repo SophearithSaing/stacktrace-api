@@ -106,6 +106,7 @@ func DecodeGenerationPolicy(data []byte) (GenerationPolicy, error) {
 	return policy, nil
 }
 
+// Validate checks whether the value satisfies its domain invariants.
 func (p GenerationPolicy) Validate() error {
 	if p.Version != 1 {
 		return fmt.Errorf("unsupported generation policy version")

@@ -9,6 +9,7 @@ import (
 	"github.com/SophearithSaing/stacktrace-api/internal/app"
 )
 
+// lockHumanActor locks and returns the authenticated human actor for a session.
 func (q *Queries) lockHumanActor(ctx context.Context, sessionHash string) (app.ID, error) {
 	queryCtx, cancel := q.queryContext(ctx)
 	defer cancel()
@@ -29,10 +30,12 @@ func (q *Queries) lockHumanActor(ctx context.Context, sessionHash string) (app.I
 	return actor, authenticationError(databaseError(queryCtx, err))
 }
 
+// normalizePostCreation revalidates and canonicalizes a post creation request.
 func normalizePostCreation(creation app.PostCreation) (app.PostCreation, error) {
 	return app.NewPostCreation(creation.Content.Body, creation.QuotedPostID, creation.Content.Code)
 }
 
+// normalizeReplyCreation revalidates and canonicalizes a reply creation request.
 func normalizeReplyCreation(creation app.ReplyCreation) (app.ReplyCreation, error) {
 	return app.NewReplyCreation(creation.PostID, creation.Body)
 }
@@ -101,6 +104,7 @@ func (s *Store) CreatePost(ctx context.Context, sessionHash, key string, supplie
 	return s.PostByID(ctx, resultID, actor)
 }
 
+// reservePost reserves an idempotent post result for an actor and key.
 func (q *Queries) reservePost(ctx context.Context, actor app.ID, key, hash string, resultID app.ID) (bool, app.ID, error) {
 	queryCtx, cancel := q.queryContext(ctx)
 	defer cancel()
@@ -130,6 +134,7 @@ func (q *Queries) reservePost(ctx context.Context, actor app.ID, key, hash strin
 	return false, app.ID(id.String), nil
 }
 
+// insertTags resolves and links extracted tags to a post.
 func (q *Queries) insertTags(ctx context.Context, postID app.ID, tags []app.Tag) error {
 	tags = append([]app.Tag(nil), tags...)
 	sort.Slice(tags, func(i, j int) bool { return tags[i].Slug < tags[j].Slug })
@@ -145,6 +150,7 @@ func (q *Queries) insertTags(ctx context.Context, postID app.ID, tags []app.Tag)
 	return nil
 }
 
+// resolveTags resolves sorted unique tag names to identifiers.
 // Resolve sorted uniqueness conflicts before publication takes agent locks.
 // New tags are provisional and must be rolled back if publication is denied.
 func (q *Queries) resolveTags(ctx context.Context, tags []app.Tag) ([]app.ID, error) {
@@ -161,6 +167,7 @@ func (q *Queries) resolveTags(ctx context.Context, tags []app.Tag) ([]app.ID, er
 	return ids, nil
 }
 
+// resolveTag loads or creates one canonical tag identifier.
 func (q *Queries) resolveTag(ctx context.Context, tag app.Tag) (app.ID, error) {
 	ctx, cancel := q.queryContext(ctx)
 	defer cancel()
@@ -172,6 +179,7 @@ func (q *Queries) resolveTag(ctx context.Context, tag app.Tag) (app.ID, error) {
 	return id, databaseError(ctx, err)
 }
 
+// linkTags links resolved tags to a post.
 func (q *Queries) linkTags(ctx context.Context, postID app.ID, ids []app.ID) error {
 	ctx, cancel := q.queryContext(ctx)
 	defer cancel()
@@ -184,6 +192,7 @@ func (q *Queries) linkTags(ctx context.Context, postID app.ID, ids []app.ID) err
 	return nil
 }
 
+// lockVisiblePost locks a post after verifying that it remains visible.
 func (q *Queries) lockVisiblePost(ctx context.Context, id app.ID) error {
 	queryCtx, cancel := q.queryContext(ctx)
 	defer cancel()
@@ -198,6 +207,7 @@ func (q *Queries) lockVisiblePost(ctx context.Context, id app.ID) error {
 	return nil
 }
 
+// CreateReply creates a reply transactionally and returns its projected result.
 func (s *Store) CreateReply(ctx context.Context, sessionHash, key string, supplied app.ReplyCreation) (app.CreateReplyResult, error) {
 	if err := app.ValidateIdempotencyKey(key); err != nil {
 		return app.CreateReplyResult{}, err
@@ -241,6 +251,7 @@ func (s *Store) CreateReply(ctx context.Context, sessionHash, key string, suppli
 	return s.replyResultByID(ctx, resultID)
 }
 
+// replyResultByID loads a reply creation result by identifier.
 func (s *Store) replyResultByID(ctx context.Context, id app.ID) (app.CreateReplyResult, error) {
 	var result app.CreateReplyResult
 	err := s.readSnapshot(ctx, func(q *Queries) error {
@@ -257,6 +268,7 @@ func (s *Store) replyResultByID(ctx context.Context, id app.ID) (app.CreateReply
 	return result, err
 }
 
+// reserveReply reserves an idempotent reply result for an actor and key.
 func (q *Queries) reserveReply(ctx context.Context, actor app.ID, key, hash string, resultID app.ID) (bool, app.ID, error) {
 	queryCtx, cancel := q.queryContext(ctx)
 	defer cancel()
@@ -283,6 +295,7 @@ func (q *Queries) reserveReply(ctx context.Context, actor app.ID, key, hash stri
 	return false, app.ID(replyID.String), nil
 }
 
+// replyByID loads a reply and reports whether it remains visible.
 func (q *Queries) replyByID(ctx context.Context, id app.ID) (app.Reply, bool, error) {
 	queryCtx, cancel := q.queryContext(ctx)
 	defer cancel()
@@ -302,12 +315,14 @@ func (q *Queries) replyByID(ctx context.Context, id app.ID) (app.Reply, bool, er
 	return r, parentDeleted != nil, nil
 }
 
+// visibleReplyTotal loads the current visible reply total for a post.
 func (q *Queries) visibleReplyTotal(ctx context.Context, postID app.ID, total *int64) error {
 	queryCtx, cancel := q.queryContext(ctx)
 	defer cancel()
 	return databaseError(queryCtx, q.queryer.QueryRowContext(queryCtx, `SELECT count(*) FROM replies WHERE post_id=$1 AND deleted_at IS NULL`, postID).Scan(total))
 }
 
+// DeletePost soft-deletes an owned post and invalidates dependent generation work.
 func (s *Store) DeletePost(ctx context.Context, sessionHash string, id app.ID) error {
 	parsed, err := app.ParseID(string(id))
 	if err != nil {
@@ -341,6 +356,7 @@ func (s *Store) DeletePost(ctx context.Context, sessionHash string, id app.ID) e
 	})
 }
 
+// DeleteReply soft-deletes an owned reply and invalidates dependent generation work.
 func (s *Store) DeleteReply(ctx context.Context, sessionHash string, id app.ID) error {
 	parsed, err := app.ParseID(string(id))
 	if err != nil {

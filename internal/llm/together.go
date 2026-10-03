@@ -78,6 +78,7 @@ type togetherJSONSchema struct {
 	Strict bool            `json:"strict"`
 }
 
+// togetherRequestBody encodes a validated prompt as a Together request body.
 func togetherRequestBody(prompt Prompt) ([]byte, error) {
 	return json.Marshal(struct {
 		Model                         string                 `json:"model"`
@@ -95,6 +96,7 @@ func togetherRequestBody(prompt Prompt) ([]byte, error) {
 	})
 }
 
+// Generate submits a generation request and returns its classified outcome.
 func (t *Together) Generate(ctx context.Context, request app.GenerationRequest) app.GenerationOutcome {
 	failure := func(code app.GenerationFailure) app.GenerationOutcome { return app.GenerationOutcome{Failure: code} }
 	prompt, err := BuildPrompt(request)
@@ -161,6 +163,7 @@ func (t *Together) Generate(ctx context.Context, request app.GenerationRequest) 
 	return outcome
 }
 
+// togetherTransportFailure classifies a Together transport failure.
 func togetherTransportFailure(ctx context.Context, err error) app.GenerationFailure {
 	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, context.Canceled) {
 		return app.GenerationCancelled
@@ -172,6 +175,7 @@ func togetherTransportFailure(ctx context.Context, err error) app.GenerationFail
 	return app.GenerationTransient
 }
 
+// safeRequestID returns a bounded provider request identifier safe for persistence.
 func (t *Together) safeRequestID(id string) string {
 	if id == "" || strings.Contains(id, t.apiKey) || (app.GenerationOutcome{Failure: app.GenerationPermanent, ProviderRequestID: id}).Validate() != nil {
 		return ""

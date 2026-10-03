@@ -19,6 +19,7 @@ type ValidationError struct {
 	Fields map[string]string
 }
 
+// Error returns the error's safe textual representation.
 func (e *ValidationError) Error() string {
 	return "validation failed"
 }

@@ -39,6 +39,7 @@ func Load(role Role) (Config, error) {
 	return load(role, os.Getenv)
 }
 
+// load loads and validates role-specific process configuration.
 func load(role Role, getenv func(string) string) (Config, error) {
 	if role != Server && role != Database && role != WorkerExecute && role != WorkerServe {
 		return Config{}, errors.New("unsupported configuration role")
@@ -127,6 +128,7 @@ func load(role Role, getenv func(string) string) (Config, error) {
 	return cfg, nil
 }
 
+// validOrigin reports whether a client origin is safe for the deployment environment.
 func validOrigin(raw, environment string) bool {
 	origin, err := url.Parse(raw)
 	if err != nil {

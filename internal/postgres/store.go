@@ -36,6 +36,7 @@ type Queries struct {
 	lifetime context.Context
 }
 
+// queryContext derives a query context bounded by the store timeout.
 func (q *Queries) queryContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	deadline := time.Now().Add(queryTimeout)
 	if q.lifetime != nil {
@@ -75,6 +76,7 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	return store, nil
 }
 
+// Ping checks that the database is reachable.
 func (s *Store) Ping(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, queryTimeout)
 	defer cancel()
@@ -92,6 +94,7 @@ func (s *Store) readSnapshot(ctx context.Context, fn func(*Queries) error) error
 	return s.transaction(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, fn)
 }
 
+// transaction runs a callback in a database transaction with panic-safe rollback.
 func (s *Store) transaction(ctx context.Context, options *sql.TxOptions, fn func(*Queries) error) error {
 	ctx, cancel := context.WithTimeout(ctx, transactionTimeout)
 	defer cancel()
@@ -109,6 +112,7 @@ func (s *Store) transaction(ctx context.Context, options *sql.TxOptions, fn func
 	return databaseError(ctx, tx.Commit())
 }
 
+// databaseError maps driver failures and cancellation to safe storage errors.
 func databaseError(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
@@ -127,6 +131,7 @@ func databaseError(ctx context.Context, err error) error {
 	return app.ErrUnavailable
 }
 
+// Close closes the database connection pool.
 func (s *Store) Close() error {
 	return s.db.Close()
 }

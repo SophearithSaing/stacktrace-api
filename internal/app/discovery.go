@@ -24,7 +24,9 @@ type SearchWindow struct {
 	InitialCeiling time.Time
 }
 
-// SearchQuery describes a bounded public post search.
+// SearchQuery describes a bounded public post search. Body terms use PostgreSQL
+// simple web search syntax (tokens, phrases, OR and negation), with no ranking
+// or stemming guarantee; author matching is a literal substring.
 type SearchQuery struct {
 	Text   string
 	Window SearchWindow

@@ -161,7 +161,7 @@ func (s *server) decodeSearchCursor(token string, viewer app.ID, text string) (a
 		return app.SearchPosition{}, time.Time{}, errInvalidCursor
 	}
 	id, err := app.ParseID(payload.ID)
-	if err != nil || payload.ID != string(id) {
+	if err != nil || id == "00000000-0000-0000-0000-000000000000" || payload.ID != string(id) {
 		return app.SearchPosition{}, time.Time{}, errInvalidCursor
 	}
 	return app.SearchPosition{CreatedAt: position.UTC(), ID: id}, ceiling.UTC(), nil

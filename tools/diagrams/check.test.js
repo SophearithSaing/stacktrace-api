@@ -9,11 +9,7 @@ import { checkDiagrams } from "./check.js";
 async function fixture(t, files) {
   const directory = await mkdtemp(path.join(tmpdir(), "diagram-check-"));
   t.after(async () => {
-    try {
-      await rm(directory, { recursive: true, force: true });
-    } catch {
-      // Ignore cleanup failures; the OS will reclaim the temp directory.
-    }
+    await rm(directory, { recursive: true, force: true });
   });
   for (const [name, contents] of Object.entries(files)) await writeFile(path.join(directory, name), contents);
   return directory;
@@ -64,11 +60,7 @@ test("prints a missing dependency diagnostic without touching installed tools", 
   const source = await readFile(new URL("./check.js", import.meta.url), "utf8");
   const directory = await mkdtemp(path.join(tmpdir(), "diagram-missing-"));
   t.after(async () => {
-    try {
-      await rm(directory, { recursive: true, force: true });
-    } catch {
-      // Ignore cleanup failures; the OS will reclaim the temp directory.
-    }
+    await rm(directory, { recursive: true, force: true });
   });
   await writeFile(path.join(directory, "check.js"), source);
   await writeFile(path.join(directory, "package.json"), '{"type":"module"}\n');

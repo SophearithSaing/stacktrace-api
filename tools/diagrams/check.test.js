@@ -52,6 +52,57 @@ test("ignores routes mentioned outside the route index section", async (t) => {
   );
 });
 
+test("covers all HTTP method tokens", async (t) => {
+  const directory = await fixture(t, {
+    "endpoint-flows.md": index([
+      "PATCH /api/v1/items",
+      "HEAD /api/v1/items",
+      "OPTIONS /api/v1/items",
+      "M-SEARCH /api/v1/search",
+      "mIxEd /api/v1/mixed",
+    ]),
+    "server.go":
+      's.mux.HandleFunc("/healthz", healthz)\ns.mux.HandleFunc("PATCH /api/v1/items", patchHandler)\ns.mux.HandleFunc("HEAD /api/v1/items", headHandler)\ns.mux.HandleFunc("OPTIONS /api/v1/items", optionsHandler)\ns.mux.HandleFunc("M-SEARCH /api/v1/search", searchHandler)\ns.mux.HandleFunc("mIxEd /api/v1/mixed", mixedHandler)\n',
+  });
+  const result = await checkDiagrams({
+    diagrams: directory,
+    server: path.join(directory, "server.go"),
+  });
+  assert.deepEqual(result, { mermaidCount: 0, dbmlCount: 0, routes: 5 });
+});
+
+function escapePattern(string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+test("reports missing and stale non-allowlist method routes", async (t) => {
+  for (const method of ["PATCH", "HEAD", "OPTIONS", "M-SEARCH", "mIxEd"]) {
+    const route = `${method} /api/v1/items`;
+    let directory = await fixture(t, {
+      "endpoint-flows.md": index("GET /api/v1/items"),
+      "server.go": `s.mux.HandleFunc("${route}", handler)\n`,
+    });
+    await assert.rejects(
+      checkDiagrams({
+        diagrams: directory,
+        server: path.join(directory, "server.go"),
+      }),
+      new RegExp(`missing \\[${escapePattern(route)}\\]`),
+    );
+    directory = await fixture(t, {
+      "endpoint-flows.md": index(route),
+      "server.go": 's.mux.HandleFunc("GET /api/v1/items", handler)\n',
+    });
+    await assert.rejects(
+      checkDiagrams({
+        diagrams: directory,
+        server: path.join(directory, "server.go"),
+      }),
+      new RegExp(`stale \\[${escapePattern(route)}\\]`),
+    );
+  }
+});
+
 test("reports malformed Mermaid sources, fenced blocks, and fences", async (t) => {
   for (const [name, source, message] of [
     ["flow.mmd", "flowchart TD\nA-->", /flow\.mmd: Parse error/],

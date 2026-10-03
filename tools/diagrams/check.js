@@ -73,7 +73,7 @@ function routeIndexSection(markdown) {
 function indexedEndpoints(markdown) {
   const endpoints = new Set();
   for (const match of routeIndexSection(markdown).matchAll(
-    /`((?:GET|POST|PUT|DELETE) \/[^`]+)`/g,
+    /`([^\s`]+ \/[^`]+)`/g,
   )) {
     endpoints.add(match[1]);
   }
@@ -83,7 +83,7 @@ function indexedEndpoints(markdown) {
 function registeredEndpoints(server) {
   const endpoints = new Set();
   for (const match of server.matchAll(
-    /s\.mux\.HandleFunc\("(GET|POST|PUT|DELETE) ([^"]+)"/g,
+    /s\.mux\.HandleFunc\("([^\s"]+) ([^"]+)"/g,
   )) {
     const endpoint = `${match[1]} ${match[2]}`;
     // ServeMux registers the constrained wildcard as {resource} so by-handle/{handle}

@@ -17,6 +17,9 @@ abstractions and infrastructure for features that have not been requested.
   `err`, `r`, `w`, and short receiver names are fine.
 - Prefer straightforward control flow, early returns, and small focused functions.
   A couple of explicit statements can be clearer than a generic helper or loop.
+- Give every production function and method, exported or unexported, a concise
+  GoDoc comment that begins with its exact declaration name and explains its
+  purpose. Test, benchmark, fake, and test-helper functions are exempt.
 - Introduce interfaces only at real boundaries. The small shared SQL interface
   for `*sql.DB` and `*sql.Tx` is useful; generic repositories, forwarding service
   layers, dependency-injection containers, and broad options structs are not.

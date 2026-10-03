@@ -21,6 +21,9 @@ func TestSearchQueryNormalize(t *testing.T) {
 	if _, err := (SearchQuery{Text: "valid", Window: SearchWindow{Limit: MaxSearchLimit + 1}}).Normalize(); err == nil {
 		t.Fatal("accepted excessive limit")
 	}
+	if _, err := (SearchQuery{Text: "valid", Window: SearchWindow{Position: &SearchPosition{ID: NewID()}}}).Normalize(); err == nil {
+		t.Fatal("accepted position without ceiling")
+	}
 }
 
 func TestSearchSnippetIsRuneBounded(t *testing.T) {
@@ -34,5 +37,8 @@ func TestSearchSnippetIsRuneBounded(t *testing.T) {
 	}
 	if got := SearchSnippet("plain text"); got != "plain text" {
 		t.Fatalf("snippet changed short body %q", got)
+	}
+	if got := SearchSnippet(strings.Repeat("界", 160)); got != strings.Repeat("界", 160) {
+		t.Fatal("changed exact boundary")
 	}
 }

@@ -1,6 +1,9 @@
 package api
 
 import (
+	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,5 +27,21 @@ func TestSearchCursorBindsViewerAndQuery(t *testing.T) {
 	}
 	if _, _, err := s.decodeSearchCursor(*token, app.ID("00000000-0000-0000-0000-000000000003"), "jsonb"); err == nil {
 		t.Fatal("cursor accepted another viewer")
+	}
+}
+
+func TestSearchCursorRejectsMalformedSignedPayloads(t *testing.T) {
+	s := &server{cursorSigningKey: []byte("search cursor test key")}
+	valid := searchCursorPayload{1, "search-posts-newest", "", "q", "2026-01-01T00:00:00Z", "2025-12-31T00:00:00Z", "00000000-0000-0000-0000-000000000001"}
+	for _, change := range []func(*searchCursorPayload){func(p *searchCursorPayload) { p.Version = 2 }, func(p *searchCursorPayload) { p.Scope = "other" }, func(p *searchCursorPayload) { p.Ceiling = "bad" }, func(p *searchCursorPayload) { p.Position = "bad" }, func(p *searchCursorPayload) { p.ID = "bad" }, func(p *searchCursorPayload) { p.ID = "00000000-0000-0000-0000-000000000000" }} {
+		payload := valid
+		change(&payload)
+		contents, _ := json.Marshal(payload)
+		if _, _, err := s.decodeSearchCursor(signRawTestCursor(s.cursorSigningKey, contents), "", "query"); !errors.Is(err, errInvalidCursor) {
+			t.Fatalf("accepted %+v", payload)
+		}
+	}
+	if _, _, err := s.decodeSearchCursor(strings.Repeat("x", maxCursorBytes+1), "", "query"); !errors.Is(err, errInvalidCursor) {
+		t.Fatal("accepted oversize cursor")
 	}
 }

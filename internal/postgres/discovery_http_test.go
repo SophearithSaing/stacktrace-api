@@ -41,7 +41,7 @@ func readHTTPSearch(t *testing.T, handler http.Handler, path string, session *br
 }
 
 func TestSearchHTTPValidationAndEmptyContract(t *testing.T) {
-	_, handler := identityHandler(t)
+	store, handler := identityHandler(t)
 	for _, path := range []string{
 		"/search/posts", "/search/posts?q=", "/search/posts?q=x", "/search/posts?q=ok&q=again", "/search/posts?q=ok&unknown=1",
 		"/search/posts?q=ok&limit=0", "/search/posts?q=ok&limit=21", "/search/posts?q=ok&limit=no", "/search/posts?q=%00x", "/search/posts?q=%FFx",
@@ -53,6 +53,17 @@ func TestSearchHTTPValidationAndEmptyContract(t *testing.T) {
 	if len(page.Items) != 0 || page.NextCursor != nil {
 		t.Fatalf("empty search=%+v", page)
 	}
+	_, session := contentTestActor(t, store, "search_http_limits")
+	for index := range 5 {
+		feedPost(t, store, session, "search-limit-"+string(rune('a'+index)), "limit searchable")
+	}
+	if page := readHTTPSearch(t, handler, "/search/posts?q=searchable", nil); len(page.Items) != 4 || page.NextCursor == nil {
+		t.Fatalf("default page=%+v", page)
+	}
+	if page := readHTTPSearch(t, handler, "/search/posts?q=searchable&limit=20", nil); len(page.Items) != 5 || page.NextCursor != nil {
+		t.Fatalf("max page=%+v", page)
+	}
+	feedHTTPError(t, handler, "/search/posts?q=ok&limit=1&limit=2", nil, http.StatusBadRequest, "invalid_query")
 	w := contentRequest(handler, "POST", "/search/posts?q=ok", "", "", nil, "192.0.2.212")
 	if w.Code != http.StatusMethodNotAllowed || w.Header().Get("Allow") != "GET, HEAD" {
 		t.Fatalf("method=%d allow=%q", w.Code, w.Header().Get("Allow"))

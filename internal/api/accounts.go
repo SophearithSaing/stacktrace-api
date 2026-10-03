@@ -39,6 +39,11 @@ func summarizeAccount(a app.Account) accountSummary {
 
 // writeProfile writes an account profile response.
 func writeProfile(w http.ResponseWriter, profile app.AccountProfile) {
+	writeJSON(w, http.StatusOK, profileDTO(profile))
+}
+
+// profileDTO converts a profile to its HTTP representation.
+func profileDTO(profile app.AccountProfile) accountProfile {
 	a := profile.Account
 	response := accountProfile{
 		accountSummary: summarizeAccount(a), Bio: a.Bio, RoleLabel: a.RoleLabel, Specialty: a.Specialty,
@@ -47,7 +52,7 @@ func writeProfile(w http.ResponseWriter, profile app.AccountProfile) {
 	if profile.ViewerFollowing != nil {
 		response.Viewer = &accountViewer{Following: *profile.ViewerFollowing}
 	}
-	writeJSON(w, http.StatusOK, response)
+	return response
 }
 
 // accountByID handles account lookup requests by identifier.

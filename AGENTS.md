@@ -52,10 +52,10 @@ abstractions and infrastructure for features that have not been requested.
 ## Documentation and verification
 
 - Keep README concise: setup, start/stop commands, package layout, and tests.
-  Put architecture explanations and review guides in `docs/`.
-- `docs/` is intentionally Git-ignored in this workspace. Do not change that
+  Put architecture explanations and review guides in `dev-logs/`.
+- `dev-logs/` is intentionally Git-ignored in this workspace. Do not change that
   policy or force-add those files without a request.
-- The architecture plan and implementation checklist live in `docs/`. Follow the
+- The architecture plan and implementation checklist live in `dev-logs/`. Follow the
   requested implementation slice and mark work complete only after verification.
 - Keep tests alongside the behavior they verify. Test meaningful contracts and
   failure/concurrency cases; avoid tests that merely repeat implementation details.

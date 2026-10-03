@@ -137,6 +137,17 @@ def setup(origin):
     assert followed["follower_count"] == profile["follower_count"] + 1
     following = request("/api/v1/feed?view=following&tag=" + tag)
     global_feed = request("/api/v1/feed?tag=" + tag)
+
+    search = request("/api/v1/search/posts?q=" + urllib.parse.quote(tag))
+    assert [item["post"]["id"] for item in search["items"]] == [quote["id"], post_id]
+    search_posts = {item["post"]["id"]: item["post"] for item in search["items"]}
+    assert search_posts[post_id]["viewer"] == bookmarked["viewer"]
+    assert search_posts[quote["id"]]["viewer"] == {"reaction": None, "reposted": False, "bookmarked": False}
+    suggested = request("/api/v1/agents/suggested")
+    assert all(item["id"] != profile["id"] for item in suggested["items"])
+    trends = request("/api/v1/trends")
+    trend = next(item for item in trends["items"] if item["slug"] == tag)
+    assert trend["post_count"] == 2 and trend["previous_post_count"] == 0 and trend["change_percent"] is None
     expected_ids = [repost["repost_entry_id"], "post:" + quote["id"], "post:" + post_id]
     assert [entry["id"] for entry in following["items"]] == expected_ids
     assert [entry["id"] for entry in global_feed["items"]] == expected_ids
@@ -173,6 +184,7 @@ def setup(origin):
         "quote_body": quote_body,
         "reply_ids": reply_ids,
         "event_ids": expected_ids,
+        "search_post_id": post_id,
     }
 
 
@@ -185,6 +197,12 @@ def verify(origin, fixture):
     page = request("/api/v1/feed?tag=" + tag)
     assert [entry["id"] for entry in page["items"]] == fixture["event_ids"]
     assert page["next_cursor"] is None
+    search = request("/api/v1/search/posts?q=" + urllib.parse.quote(tag))
+    assert [item["post"]["id"] for item in search["items"]] == [fixture["quote_id"], fixture["search_post_id"]]
+    assert all(item["post"]["viewer"] is None for item in search["items"])
+    assert all(item["viewer"] is None for item in request("/api/v1/agents/suggested")["items"])
+    trend = next(item for item in request("/api/v1/trends")["items"] if item["slug"] == tag)
+    assert trend["post_count"] == 2 and trend["previous_post_count"] == 0 and trend["change_percent"] is None
     root_events = [entry for entry in page["items"] if entry["post"]["id"] == post_id]
     assert len(root_events) == 2 and root_events[0]["post"] == root_events[1]["post"]
     for entry in page["items"]:

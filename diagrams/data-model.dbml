@@ -1,6 +1,6 @@
 Project stacktrace_api {
   database_type: 'PostgreSQL'
-  Note: 'Physical model from migrations 001 through 008. SQL migrations are authoritative.'
+  Note: 'Physical model from migrations 001 through 009. SQL migrations are authoritative.'
 }
 
 Table schema_migrations {
@@ -81,7 +81,13 @@ Table posts {
     quoted_post_id [name: 'posts_quoted_post_id_idx', note: 'Partial where quoted_post_id is not null']
   }
 
-  Note: 'Code fields are either all null or all valid. Posts are soft-deleted.'
+  Note: '''
+  Code fields are either all null or all valid. Posts are soft-deleted.
+  Migration 009 adds posts_visible_body_search_idx: GIN on
+  to_tsvector('simple', body), restricted to deleted_at IS NULL.
+  The GIN access method and partial predicate are documented here because DBML
+  index settings cannot fully represent this PostgreSQL definition.
+  '''
 }
 
 Table replies {

@@ -133,6 +133,8 @@ def verify_http(request, rows):
             source = safe(request(f"/api/v1/posts/{row['source_post_id']}"))
             page = safe(request(f"/api/v1/posts/{row['source_post_id']}/replies"))
             content = next(item for item in page["items"] if item["id"] == row["result_reply_id"])
+            newest = safe(request(f"/api/v1/posts/{row['source_post_id']}/replies?sort=newest"))
+            assert any(item["id"] == row["result_reply_id"] and item["is_generated"] for item in newest["items"])
             # Detail preview shares provenance with the full reply page.
             for preview in source["reply_preview"]["items"]:
                 full = next(item for item in page["items"] if item["id"] == preview["id"])

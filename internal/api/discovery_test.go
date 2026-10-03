@@ -50,6 +50,15 @@ func TestSearchCursorRejectsMalformedSignedPayloads(t *testing.T) {
 	if _, _, err := s.decodeSearchCursor(*token, "", "query"); err != nil {
 		t.Fatalf("valid cursor rejected: %v", err)
 	}
+	tampered := *token
+	if tampered[len(tampered)-1] == 'A' {
+		tampered = tampered[:len(tampered)-1] + "B"
+	} else {
+		tampered = tampered[:len(tampered)-1] + "A"
+	}
+	if _, _, err := s.decodeSearchCursor(tampered, "", "query"); !errors.Is(err, errInvalidCursor) {
+		t.Fatal("accepted unsigned signature tampering")
+	}
 	for _, change := range []func(*searchCursorPayload){
 		func(p *searchCursorPayload) { p.Version = 2 },
 		func(p *searchCursorPayload) { p.Scope = "other" },

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -79,10 +80,13 @@ func TestSearchHTTPSemanticsAndCanonicalProjection(t *testing.T) {
 	ctx := context.Background()
 	viewer := registerBrowser(t, handler, "search_http_viewer", "192.0.2.213")
 	author := registerBrowser(t, handler, "search_http_author", "192.0.2.214")
+	nearMatch := registerBrowser(t, handler, "search_http_near_match", "192.0.2.219")
 	viewerHash, authorHash := app.SessionHash(viewer.cookie.Value), app.SessionHash(author.cookie.Value)
 	body := feedPost(t, store, authorHash, "search-http-body", "exact jsonb_path_ops phrase")
 	matched := feedPost(t, store, authorHash, "search-http-author", "unrelated body")
+	nearMatched := feedPost(t, store, app.SessionHash(nearMatch.cookie.Value), "search-http-near-match", "ordinary content")
 	feedExec(t, store, `UPDATE accounts SET display_name='literal%_\name' WHERE id=$1`, author.Account.ID)
+	feedExec(t, store, `UPDATE accounts SET display_name='literalXXZname' WHERE id=$1`, nearMatch.Account.ID)
 	if _, err := store.SetRepost(ctx, viewerHash, body.ID, true); err != nil {
 		t.Fatal(err)
 	}
@@ -95,6 +99,9 @@ func TestSearchHTTPSemanticsAndCanonicalProjection(t *testing.T) {
 		t.Fatalf("literal author count=%d", len(page.Items))
 	}
 	for _, item := range page.Items {
+		if item.Post.ID == nearMatched.ID {
+			t.Fatalf("literal author wildcard matched=%+v", page)
+		}
 		if item.Post.ID == matched.ID && item.Post.Viewer == nil {
 			t.Fatal("authenticated viewer projection missing")
 		}
@@ -137,6 +144,14 @@ func TestSearchHTTPPaginationCursorContracts(t *testing.T) {
 	}
 	if len(seen) != 3 {
 		t.Fatalf("tie pagination missing results=%v", seen)
+	}
+	want := []app.ID{first.ID, second.ID, third.ID}
+	sort.Slice(want, func(left, right int) bool { return want[left] > want[right] })
+	got := []app.ID{page.Items[0].Post.ID, continued.Items[0].Post.ID, continued.Items[1].Post.ID}
+	for index := range want {
+		if got[index] != want[index] {
+			t.Fatalf("tie order=%v want=%v", got, want)
+		}
 	}
 	feedHTTPError(t, handler, "/search/posts?q=other+marker&cursor="+url.QueryEscape(*page.NextCursor), &viewer, http.StatusBadRequest, "invalid_cursor")
 	feedHTTPError(t, handler, "/search/posts?q=cursor+marker&cursor="+url.QueryEscape(*page.NextCursor), &other, http.StatusBadRequest, "invalid_cursor")

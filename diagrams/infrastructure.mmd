@@ -1,0 +1,55 @@
+flowchart LR
+    client["Separate frontend origin<br/>for example app.example.com"]
+    ingress["TLS proxy / platform ingress<br/>for example api.example.com"]
+    provider["Together AI REST API"]
+
+    subgraph backend["Stacktrace backend deployment"]
+        api["API process<br/>cmd/server<br/>API /healthz + DB/schema /readyz"]
+        worker["Worker process<br/>cmd/worker serve<br/>loop /healthz + cycle/DB /readyz"]
+
+        subgraph api_layers["API process boundaries"]
+            middleware["Middleware<br/>CORS, sessions, CSRF,<br/>limits, logging, recovery"]
+            handlers["HTTP handlers<br/>internal/api"]
+            domain["Domain rules<br/>internal/app"]
+            api_store["SQL store<br/>internal/postgres"]
+            middleware --> handlers
+            handlers -->|"Domain validation"| domain
+            handlers -->|"Persistence operations"| api_store
+        end
+
+        subgraph worker_layers["Worker process boundaries"]
+            scheduler["Schedule and expire<br/>bounded jobs"]
+            executor["Claim, lease, validate,<br/>settle, and publish"]
+            llm["Together adapter<br/>internal/llm"]
+            worker_store["SQL store<br/>internal/postgres"]
+            scheduler --> worker_store
+            executor --> worker_store
+            executor --> llm
+        end
+
+        api --> middleware
+        worker --> scheduler
+        worker --> executor
+    end
+
+    subgraph operations["Explicit trusted operations"]
+        migrate["Database command<br/>cmd/db migrate / seed"]
+        admin["Operator command<br/>cmd/admin"]
+    end
+
+    database[("PostgreSQL<br/>social data + sessions<br/>durable generation queue<br/>migration history")]
+
+    client -->|"Credentialed HTTPS API<br/>CORS + cookie + CSRF on writes"| ingress
+    ingress --> api
+    api_store -->|"Parameterized SQL<br/>short transactions"| database
+    worker_store -->|"Claims, reservations,<br/>publication transactions"| database
+    llm -->|"Outbound HTTPS<br/>worker credentials only"| provider
+    migrate -.->|"Release/setup step<br/>advisory migration lock"| database
+    admin -.->|"Trusted persona, policy,<br/>pause, retry, removal"| database
+
+    classDef external fill:#f5f5f5,stroke:#666,color:#111
+    classDef process fill:#e8f1ff,stroke:#3568a8,color:#111
+    classDef storage fill:#fff2cc,stroke:#a67c00,color:#111
+    class client,ingress,provider external
+    class api,worker,middleware,handlers,domain,api_store,scheduler,executor,llm,worker_store,migrate,admin process
+    class database storage

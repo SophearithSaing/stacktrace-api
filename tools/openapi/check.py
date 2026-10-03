@@ -8,9 +8,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import yaml
-from jsonschema import Draft202012Validator, FormatChecker
-from openapi_spec_validator import OpenAPIV31SpecValidator
+try:
+    import yaml
+    from jsonschema import Draft202012Validator, FormatChecker
+    from openapi_spec_validator import OpenAPIV31SpecValidator
+except ImportError:
+    print("OpenAPI dependencies are unavailable; run make openapi-setup first.")
+    raise SystemExit(2)
 
 
 ROOT = Path(__file__).resolve().parents[2]

@@ -209,6 +209,38 @@ func TestMigrateUpgradeFromContent(t *testing.T) {
 	}
 }
 
+func TestMigrateUpgradeToDiscoverySearchIndex(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	catalog, err := loadMigrations(migrations.Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog) != 9 {
+		t.Fatalf("migration count=%d", len(catalog))
+	}
+	if err := store.migrate(ctx, catalog[:8]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO accounts(id,type,handle,display_name,created_at,updated_at) VALUES ('10000000-0000-0000-0000-000000000009','human','search_upgrade','Search',now(),now()); INSERT INTO posts(id,author_id,body,created_at) VALUES ('20000000-0000-0000-0000-000000000009','10000000-0000-0000-0000-000000000009','retained searchable post',now())`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var definition, body string
+	if err := store.db.QueryRowContext(ctx, `SELECT indexdef FROM pg_indexes WHERE schemaname=current_schema() AND indexname='posts_visible_body_search_idx'`).Scan(&definition); err != nil || !strings.Contains(definition, "to_tsvector('simple'::regconfig, body)") || !strings.Contains(definition, "WHERE (deleted_at IS NULL)") {
+		t.Fatalf("search index=%q err=%v", definition, err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT body FROM posts WHERE id='20000000-0000-0000-0000-000000000009'`).Scan(&body); err != nil || body != "retained searchable post" {
+		t.Fatalf("retained post=%q err=%v", body, err)
+	}
+	var oldChecksums int
+	if err := store.db.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations WHERE version <= 8 AND checksum <> ''`).Scan(&oldChecksums); err != nil || oldChecksums != 8 {
+		t.Fatalf("old checksums=%d err=%v", oldChecksums, err)
+	}
+}
+
 func TestMigrationLockCancellation(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()

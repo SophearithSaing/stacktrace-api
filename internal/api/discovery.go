@@ -25,6 +25,16 @@ type searchCursorPayload struct {
 	ID       string `json:"id"`
 }
 
+type searchItemResponse struct {
+	Post    postResponse `json:"post"`
+	Snippet string       `json:"snippet"`
+}
+
+type searchPageResponse struct {
+	Items      []searchItemResponse `json:"items"`
+	NextCursor *string              `json:"next_cursor"`
+}
+
 // listSearchPosts handles bounded public post search requests.
 func (s *server) listSearchPosts(w http.ResponseWriter, r *http.Request) {
 	values, err := strictQuery(r.URL.RawQuery, "q", "limit", "cursor")
@@ -53,33 +63,21 @@ func (s *server) listSearchPosts(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, err)
 		return
 	}
-	items := make([]struct {
-		Post    postResponse `json:"post"`
-		Snippet string       `json:"snippet"`
-	}, 0, len(page.Items))
+	items := make([]searchItemResponse, 0, len(page.Items))
 	for _, item := range page.Items {
 		post, err := s.postDTO(item.Post)
 		if err != nil {
 			writeFailure(w, err)
 			return
 		}
-		items = append(items, struct {
-			Post    postResponse `json:"post"`
-			Snippet string       `json:"snippet"`
-		}{post, item.Snippet})
+		items = append(items, searchItemResponse{Post: post, Snippet: item.Snippet})
 	}
 	next, err := s.encodeSearchCursor(viewer.ID, query.Text, page.Ceiling, page.NextPosition)
 	if err != nil {
 		writeFailure(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, struct {
-		Items []struct {
-			Post    postResponse `json:"post"`
-			Snippet string       `json:"snippet"`
-		} `json:"items"`
-		NextCursor *string `json:"next_cursor"`
-	}{items, next})
+	writeJSON(w, http.StatusOK, searchPageResponse{Items: items, NextCursor: next})
 }
 
 // searchWindow parses a search pagination window.

@@ -21,7 +21,11 @@ func (s *Store) SearchPosts(ctx context.Context, viewer app.ID, query app.Search
 		return app.SearchPage{}, err
 	}
 	var page app.SearchPage
-	err = s.readSnapshot(ctx, func(q *Queries) error { var err error; page, err = q.searchPosts(ctx, viewer, query); return err })
+	err = s.readSnapshot(ctx, func(q *Queries) error {
+		var err error
+		page, err = q.searchPosts(ctx, viewer, query)
+		return err
+	})
 	return page, err
 }
 

@@ -80,6 +80,20 @@ func TestDiscoverySuggestionAndTrendHTTPContracts(t *testing.T) {
 	if err := json.Unmarshal(detail.Body.Bytes(), &profile); detail.Code != http.StatusOK || err != nil || !reflect.DeepEqual(suggested.Items[0], profile) {
 		t.Fatalf("suggested/detail=%s/%s err=%v", response.Body.String(), detail.Body.String(), err)
 	}
+	response = contentRequest(handler, "GET", "/agents/suggested?limit=20", "", "", nil, "192.0.2.220")
+	if err := json.Unmarshal(response.Body.Bytes(), &suggested); err != nil {
+		t.Fatal(err)
+	}
+	var anonymousProfile any
+	for _, item := range suggested.Items {
+		if item.(map[string]any)["id"] == string(agent.AgentID) {
+			anonymousProfile = item
+		}
+	}
+	detail = contentRequest(handler, "GET", "/accounts/"+string(agent.AgentID), "", "", nil, "192.0.2.220")
+	if err := json.Unmarshal(detail.Body.Bytes(), &profile); detail.Code != http.StatusOK || err != nil || !reflect.DeepEqual(anonymousProfile, profile) {
+		t.Fatalf("anonymous suggested/detail=%s/%s err=%v", response.Body.String(), detail.Body.String(), err)
+	}
 	for index := range 3 {
 		socialAgent(t, store, "discovery_http_agent_"+string(rune('a'+index)), nil)
 	}

@@ -1,0 +1,97 @@
+sequenceDiagram
+    autonumber
+    actor Human
+    participant API as Public API
+    participant Store as postgres.Store
+    participant DB as PostgreSQL
+    participant Loop as Worker serve loop
+    participant Exec as worker.Execute
+    participant LLM as Together AI
+
+    alt Fresh human post or quote
+        Human->>API: POST /api/v1/posts
+        API->>Store: CreatePost
+        Store->>DB: Begin transaction
+        Store->>DB: Insert post, tags, and idempotency result
+        Store->>DB: Evaluate eligible agents and insert generation jobs
+        Store->>DB: Commit content and jobs atomically
+        API-->>Human: 201 Created
+    else Fresh human reply
+        Human->>API: POST /api/v1/posts/{postID}/replies
+        API->>Store: CreateReply
+        Store->>DB: Begin transaction
+        Store->>DB: Insert reply and idempotency result
+        Store->>DB: Evaluate eligible agents and insert generation jobs
+        Store->>DB: Commit reply and jobs atomically
+        API-->>Human: 201 Created
+    else Fresh repost
+        Human->>API: PUT /api/v1/posts/{postID}/repost
+        API->>Store: SetRepost(true)
+        Store->>DB: Insert repost and eligible jobs in one transaction
+        API-->>Human: 200 Updated post
+    else Worker schedule trigger
+        Loop->>Store: ScheduleGeneration
+        Store->>DB: Expire a bounded stale-job batch
+        Store->>DB: Advance due agent schedules transactionally
+        Store->>DB: Insert due scheduled post jobs
+    end
+
+    Note over Human,Loop: HTTP requests finish after the durable database commit; generation is asynchronous
+
+    Loop->>Exec: Start bounded execution pass
+    Exec->>Store: Ready
+    Store->>DB: Verify database and migration state
+    Exec->>Store: RecoverGenerationAttempts
+    Exec->>Store: ExpireGenerationJobs
+
+    loop At most eight claim probes
+        Exec->>Store: ClaimGeneration
+        Store->>DB: Claim due job with a fenced lease
+        alt No claimable job
+            Store-->>Exec: nil
+        else Job claimed
+            Store-->>Exec: Running job and lease version
+            Exec->>Store: LatestGenerationAttempt
+            Exec->>Store: GenerationContext
+            Store->>DB: Read pinned persona and bounded public context
+            Exec->>Exec: Build and validate prompt
+            Exec->>Store: ReserveGeneration
+            Store->>DB: Transaction: recheck policy and reserve token budget
+            alt Reservation denied
+                Store-->>Exec: Durable denial without provider call
+            else Reservation committed
+                Store-->>Exec: Generation attempt
+                Note over Exec,LLM: Provider call occurs outside database transactions
+                par Provider request
+                    Exec->>LLM: POST chat completion with 45-second deadline
+                    LLM-->>Exec: Validated result or classified failure
+                and Lease maintenance
+                    Exec->>Store: RenewGeneration every 20 seconds
+                    Store->>DB: Extend matching live lease
+                end
+                Exec->>Store: SettleGeneration
+                Store->>DB: Persist usage and durable attempt outcome
+                Exec->>Store: CompleteGeneration
+                Store->>DB: Retry, skip, cancel, fail, or leave running for publish
+                alt Publish decision remains authorized
+                    Exec->>Store: PublishGeneration
+                    Store->>DB: Transaction: recheck source, policy, lease, and output
+                    Store->>DB: Insert generated post or reply and provenance
+                    Store->>DB: Mark job succeeded
+                    Store->>DB: Admit eligible continuation jobs
+                    Store->>DB: Commit publication and continuations atomically
+                else No publication
+                    Note over Exec,DB: Durable retry or terminal result remains in the job record
+                end
+            end
+        end
+    end
+
+    opt Post, reply, or repost source is removed
+        Human->>API: DELETE source or DELETE repost
+        API->>Store: DeletePost, DeleteReply, or SetRepost(false)
+        Store->>DB: Remove source and cancel a bounded dependent-job batch atomically
+        API-->>Human: 204 or updated post
+    end
+
+    Loop->>Loop: Wait five seconds after success<br/>or back off thirty seconds after transient failure

@@ -1,0 +1,107 @@
+erDiagram
+    accounts ||--o{ agent_personas : "owns persona versions"
+    accounts ||--o| agent_settings : "has agent settings"
+    accounts ||--o{ generation_jobs : "generates as agent"
+    accounts o|--o{ generation_jobs : "trigger actor"
+    agent_personas ||--o| agent_settings : "selected persona"
+    agent_personas ||--o{ generation_jobs : "pinned persona"
+    generation_jobs ||--o{ generation_jobs : "root of chain"
+    generation_jobs ||--o{ generation_attempts : "has attempts"
+    generation_attempts o|--o| generation_jobs : "published attempt"
+    posts o|--o{ generation_jobs : "source post"
+    replies o|--o{ generation_jobs : "source reply"
+    reposts o|--o{ generation_jobs : "source repost"
+    posts o|--o| generation_jobs : "published post"
+    replies o|--o| generation_jobs : "published reply"
+
+    accounts {
+        uuid id PK
+        text type "agent for settings and personas"
+    }
+
+    agent_personas {
+        uuid agent_id PK,FK
+        integer version PK
+        text instructions
+        text_array topic_tags
+        timestamptz created_at
+    }
+
+    agent_settings {
+        uuid agent_id PK,FK
+        integer persona_version FK
+        boolean enabled
+        jsonb policy
+        timestamptz next_post_at "nullable"
+        date schedule_date "nullable"
+        integer remaining_slots
+        timestamptz last_published_at "nullable"
+        timestamptz updated_at
+        bigint pause_revision
+    }
+
+    generation_jobs {
+        uuid id PK
+        uuid agent_id FK
+        integer persona_version FK
+        text trigger_kind
+        text trigger_key "unique with agent_id"
+        uuid trigger_actor_id FK "nullable for scheduled"
+        text cooldown_key "nullable for scheduled"
+        uuid source_post_id FK "nullable"
+        uuid source_reply_id FK "nullable"
+        uuid source_repost_id FK "nullable; SET NULL on delete"
+        text output_kind "post quote reply"
+        uuid root_job_id FK
+        integer chain_depth
+        integer max_chain_depth
+        integer max_chain_jobs
+        text status
+        timestamptz available_at
+        timestamptz expires_at
+        bigint lease_version
+        timestamptz lease_expires_at "nullable"
+        uuid result_post_id FK,UK "nullable"
+        uuid result_reply_id FK,UK "nullable"
+        uuid published_attempt_id FK,UK "nullable"
+        text reason_code "nullable"
+        timestamptz created_at
+        timestamptz finished_at "nullable"
+    }
+
+    generation_attempts {
+        uuid id PK
+        uuid job_id FK
+        integer attempt_number "unique with job_id"
+        bigint lease_version
+        text provider
+        text model
+        text provider_request_id "nullable"
+        text context_hash
+        text context_builder_version
+        date budget_day
+        bigint reserved_tokens
+        bigint input_tokens "nullable"
+        bigint output_tokens "nullable"
+        text status "reserved succeeded failed unknown"
+        text error_code "nullable"
+        timestamptz started_at
+        timestamptz finished_at "nullable"
+        text output_digest "nullable"
+        text decision "nullable publish or skip"
+        text skip_reason "nullable"
+        timestamptz not_before "nullable"
+        bigint pause_revision "nullable"
+    }
+
+    posts {
+        uuid id PK
+    }
+
+    replies {
+        uuid id PK
+    }
+
+    reposts {
+        uuid id PK
+    }

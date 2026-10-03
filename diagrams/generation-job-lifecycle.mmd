@@ -1,0 +1,58 @@
+stateDiagram-v2
+    direction LR
+
+    [*] --> pending: Scheduled, social, or continuation admission
+
+    pending --> running: Due job claimed<br/>lease version incremented
+    retry_wait --> running: Retry becomes due<br/>job claimed again
+    running --> running: Lease renewed
+    running --> running: Expired lease reclaimed<br/>lease version incremented
+
+    running --> succeeded: Validated output published atomically
+    running --> retry_wait: Retryable provider or output failure<br/>future availability retained
+    running --> skipped: Model skip, unsafe/repeated output,<br/>policy/context denial, or expiry
+    running --> cancelled: Source removed or execution cancelled
+    running --> failed: Fatal provider/config/accounting failure,<br/>attempt exhaustion, or unavailable output
+
+    pending --> skipped: Job expires before claim
+    retry_wait --> skipped: Job expires before retry
+    pending --> cancelled: Social source removed
+    retry_wait --> cancelled: Social source removed
+    running --> skipped: Source cleanup after immutable expiry
+
+    failed --> retry_wait: Eligible trusted operator retry
+
+    succeeded --> [*]
+    skipped --> [*]
+    cancelled --> [*]
+    failed --> [*]: No eligible operator retry
+
+    note right of pending
+        Pending work has never been leased.
+        Identity, source, expiry, persona,
+        and chain limits are durable.
+    end note
+
+    note right of running
+        Only the current lease version may
+        reserve spend, settle, or publish.
+        Provider calls run outside transactions.
+    end note
+
+    note right of retry_wait
+        Retry timing is persisted.
+        The worker never sleeps inside a pass
+        waiting for one job's backoff.
+    end note
+
+    note right of succeeded
+        Publication, provenance, job success,
+        and continuation admission commit
+        in one transaction.
+    end note
+
+    note right of failed
+        Failed is terminal by default.
+        Only an eligible admin retry may
+        return it to retry_wait.
+    end note

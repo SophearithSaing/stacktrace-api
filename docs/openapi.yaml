@@ -2,48 +2,34 @@ openapi: 3.1.0
 info:
   title: Stacktrace API
   version: 1.0.0
-  description: 'Public HTTP API for Stacktrace. All timestamps are UTC RFC 3339 strings.
+  description: |
+    Public HTTP API for Stacktrace. All timestamps are UTC RFC 3339 strings.
 
-
-    GET registrations also receive net/http''s automatic HEAD behavior. API paths
-
+    GET registrations also receive net/http's automatic HEAD behavior. API paths
     support CORS preflight as shared behavior, rather than explicit OPTIONS routes:
-
     a configured exact Origin, one requested method (GET, HEAD, POST, PUT, or
-
     DELETE), and only Content-Type, X-CSRF-Token, and Idempotency-Key request
-
     headers are accepted. Successful preflight is 204. API responses use private,
-
     no-store caching; configured origins receive credentials CORS headers and expose
-
     Location, X-Request-ID, and Retry-After.
 
-
     A session is an HttpOnly, SameSite=Lax cookie with a seven-day lifetime. Its
-
     development name is stacktrace_session_dev; secure deployments use
-
     __Host-stacktrace_session. A stale session is anonymous on public reads.
-
     State-changing requests require a configured exact Origin, a valid session, and
-
     exactly one X-CSRF-Token obtained from the authenticated response. Register and
-
     login require only the trusted Origin. Current rate controls can return 429 with
-
     Retry-After: 120 requests/minute/IP generally (probes excluded), credential
-
     requests also 20/15 minutes/IP and 10/15 minutes/normalized username, and
-
     authenticated writes 60/minute/account. These are current controls, not a
-
     stable quota commitment.
 
-
-    Handlers that decode JSON require one UTF-8 application/json object with identity content encoding, no unknown properties, and at most 64 KiB. Pagination and discovery handlers reject unknown, repeated, or empty documented query values; detail endpoints do not generally reject extra query keys. A method mismatch returns 405 with Allow; all responses include X-Request-ID, Cache-Control, and X-Content-Type-Options headers.
-
-    '
+    Handlers that decode JSON require one UTF-8 application/json object with identity
+    content encoding, no unknown properties, and at most 64 KiB. Pagination and
+    discovery handlers reject unknown, repeated, or empty documented query values;
+    detail endpoints do not generally reject extra query keys. A method mismatch
+    returns 405 with Allow; all responses include X-Request-ID, Cache-Control, and
+    X-Content-Type-Options headers.
 servers:
 - url: /
 security: []
@@ -228,6 +214,7 @@ paths:
     - $ref: '#/components/parameters/AccountID'
     put:
       summary: Follow an account
+      description: Idempotently sets follow state to present; it is not a toggle.
       security:
       - SessionCookieDevelopment: []
         CSRFToken: []
@@ -259,6 +246,7 @@ paths:
       operationId: putAccountsAccountidFollow
     delete:
       summary: Unfollow an account
+      description: Idempotently sets follow state to absent; it is not a toggle.
       security:
       - SessionCookieDevelopment: []
         CSRFToken: []
@@ -507,6 +495,7 @@ paths:
     - $ref: '#/components/parameters/PostID'
     put:
       summary: Set a reaction
+      description: Idempotently sets the viewer's one reaction, replacing its kind when different; it is not a toggle.
       security:
       - SessionCookieDevelopment: []
         CSRFToken: []
@@ -548,6 +537,7 @@ paths:
       operationId: putPostsPostidReaction
     delete:
       summary: Remove a reaction
+      description: Idempotently clears the viewer's reaction; it is not a toggle.
       security:
       - SessionCookieDevelopment: []
         CSRFToken: []
@@ -643,6 +633,7 @@ paths:
     - $ref: '#/components/parameters/PostID'
     put:
       summary: Add a bookmark
+      description: Idempotently sets private bookmark state to present; it is not a toggle and does not trigger generation.
       security:
       - SessionCookieDevelopment: []
         CSRFToken: []
@@ -672,6 +663,7 @@ paths:
       operationId: putPostsPostidBookmark
     delete:
       summary: Remove a bookmark
+      description: Idempotently sets private bookmark state to absent; it is not a toggle and does not trigger generation.
       security:
       - SessionCookieDevelopment: []
         CSRFToken: []
@@ -726,7 +718,7 @@ paths:
   /api/v1/feed:
     get:
       summary: List global feed events
-      description: Feed entries identify events (kind:id), not canonical posts. The following view requires an authenticated session. Continuation bounds event time only; it is not a cross-request snapshot or commit watermark. Reacted ordering is best effort if scores change.
+      description: Feed entries identify events (kind:id), not canonical posts. The following view requires an authenticated session. Feed cursors are bound to the viewer, selection, and ordering. Continuation bounds event time only; it is not a cross-request snapshot or commit watermark. Reacted ordering is best effort if scores change.
       parameters:
       - name: view
         in: query
@@ -776,7 +768,7 @@ paths:
     - $ref: '#/components/parameters/AccountID'
     get:
       summary: List an account's feed events
-      description: Effective path for the only accepted account resource is /feed.
+      description: Effective path for the only accepted account resource is /feed. Account-feed cursors are bound to the viewer and target account.
       parameters:
       - $ref: '#/components/parameters/LimitRead'
       - $ref: '#/components/parameters/Cursor'
@@ -955,7 +947,7 @@ components:
       schema:
         type: string
         maxLength: 2048
-      description: Opaque signed continuation bound to this endpoint, selection, viewer, and ordering.
+      description: Opaque signed continuation bound to the endpoint, selection, and ordering. Viewer binding is endpoint-dependent.
   headers:
     RetryAfter:
       schema:
@@ -1105,7 +1097,7 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
     UnsupportedMediaType:
-      description: error.code is unsupported_media_type; body is not one UTF-8 application/json object with identity encoding.
+      description: error.code is unsupported_media_type for a non-application/json MIME type, unsupported charset, or non-identity Content-Encoding. Malformed, non-object, or invalid UTF-8 JSON is 400 invalid_json.
       content:
         application/json:
           schema:
@@ -1249,7 +1241,7 @@ components:
           description: Valid UTF-8 and 12-1024 bytes; sent exactly as supplied.
         display_name:
           type: string
-          description: Trimmed display name must contain 1-80 Unicode code points.
+          description: Trimmed display name must contain 1-80 Unicode code points and no NUL.
     LoginRequest:
       type: object
       additionalProperties: false
@@ -1286,7 +1278,7 @@ components:
       properties:
         body:
           type: string
-          description: Trimmed body must contain 1-320 Unicode code points and at most five unique extracted hashtags.
+          description: Trimmed body must contain 1-320 Unicode code points, no NUL, and at most five unique extracted hashtags.
         quoted_post_id:
           type:
           - string
@@ -1304,7 +1296,7 @@ components:
       properties:
         body:
           type: string
-          description: Trimmed body must contain 1-320 Unicode code points.
+          description: Trimmed body must contain 1-320 Unicode code points and no NUL.
     ReactionRequest:
       type: object
       additionalProperties: false

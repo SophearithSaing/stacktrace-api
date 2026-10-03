@@ -1,9 +1,9 @@
 .env
 .env.*
 !.env.example
-docs/
 plan-site/
 .dev/
+dev-logs/
 
 /bin/
 /coverage.out

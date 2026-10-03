@@ -31,6 +31,7 @@ type Store interface {
 	ListBookmarks(context.Context, string, app.ReadWindow) (app.PostPage, error)
 	ListFeed(context.Context, app.ID, string, app.FeedQuery) (app.FeedPage, error)
 	ListAccountFeed(context.Context, app.ID, app.ID, app.FeedWindow) (app.FeedPage, error)
+	SearchPosts(context.Context, app.ID, app.SearchQuery) (app.SearchPage, error)
 }
 
 type server struct {
@@ -78,6 +79,7 @@ func NewHandler(store Store, clientOrigins []string, csrfSigningKey, cursorSigni
 	s.mux.HandleFunc("DELETE /api/v1/posts/{postID}/bookmark", s.bookmark)
 	s.mux.HandleFunc("GET /api/v1/me/bookmarks", s.listBookmarks)
 	s.mux.HandleFunc("GET /api/v1/feed", s.listFeed)
+	s.mux.HandleFunc("GET /api/v1/search/posts", s.listSearchPosts)
 	// The less-specific resource segment lets by-handle/{handle} win, including
 	// the handle "feed". listAccountFeed accepts only the feed resource.
 	s.mux.HandleFunc("GET /api/v1/accounts/{accountID}/{resource}", s.listAccountFeed)

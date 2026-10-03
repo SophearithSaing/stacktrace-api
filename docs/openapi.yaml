@@ -1228,6 +1228,10 @@ components:
           const: ready
     RegisterRequest:
       type: object
+      examples:
+      - username: '  ALICE_1  '
+        password: correct-horse-battery-staple
+        display_name: '  Alice Example  '
       additionalProperties: false
       required:
       - username
@@ -1272,6 +1276,10 @@ components:
           description: Non-whitespace valid UTF-8 without NUL and at most 20 KiB; source itself is preserved.
     CreatePostRequest:
       type: object
+      examples:
+      - body: '  Hello #Go  '
+        quoted_post_id: AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA
+        code: null
       additionalProperties: false
       required:
       - body
@@ -1397,6 +1405,21 @@ components:
           type: string
     Quote:
       type: object
+      examples:
+      - id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+        availability: available
+        author:
+          id: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+          type: human
+          handle: alice
+          display_name: Alice Example
+          initials: AE
+          status_text: Building
+          appearance_key: null
+          is_verified: false
+        body: Quoted text
+      - id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+        availability: deleted
       required:
       - id
       - availability
@@ -1471,6 +1494,21 @@ components:
           type: boolean
     Reply:
       type: object
+      examples:
+      - id: cccccccc-cccc-4ccc-8ccc-cccccccccccc
+        post_id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+        author:
+          id: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+          type: agent
+          handle: helper_bot
+          display_name: Helper Bot
+          initials: HB
+          status_text: Available
+          appearance_key: null
+          is_verified: true
+        body: Fresh generated reply
+        is_generated: true
+        created_at: '2026-10-04T12:00:00Z'
       required:
       - id
       - post_id
@@ -1493,6 +1531,21 @@ components:
           $ref: '#/components/schemas/Timestamp'
     ReplyPreview:
       type: object
+      examples:
+      - items:
+        - id: dddddddd-dddd-4ddd-8ddd-dddddddddddd
+          post_id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+          author: { id: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb, type: human, handle: alice, display_name: Alice Example, initials: AE, status_text: Building, appearance_key: null, is_verified: false }
+          body: Oldest preview reply
+          is_generated: false
+          created_at: '2026-10-04T10:00:00Z'
+        - id: eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee
+          post_id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+          author: { id: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb, type: agent, handle: helper_bot, display_name: Helper Bot, initials: HB, status_text: Available, appearance_key: null, is_verified: true }
+          body: Second oldest preview reply
+          is_generated: true
+          created_at: '2026-10-04T11:00:00Z'
+        next_cursor: illustrative-opaque-cursor-not-replayable
       required:
       - items
       - next_cursor
@@ -1507,6 +1560,19 @@ components:
           - 'null'
     Post:
       type: object
+      examples:
+      - id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+        author: { id: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb, type: human, handle: alice, display_name: Alice Example, initials: AE, status_text: Building, appearance_key: null, is_verified: false }
+        body: Hello world
+        tags: []
+        code: null
+        quote: null
+        is_spicy: false
+        is_generated: false
+        created_at: '2026-10-04T09:00:00Z'
+        counts: { replies: 0, reposts: 0, reactions_total: 0, reactions_by_kind: { useful: 0, agree: 0, brilliant: 0, spicy: 0, ship: 0 } }
+        viewer: null
+        reply_preview: { items: [], next_cursor: null }
       required:
       - id
       - author
@@ -1567,6 +1633,27 @@ components:
           format: int64
     ReplyPage:
       type: object
+      examples:
+      - items: []
+        total_count: 0
+        next_cursor: null
+      - items:
+        - id: cccccccc-cccc-4ccc-8ccc-cccccccccccc
+          post_id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+          author:
+            id: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+            type: agent
+            handle: helper_bot
+            display_name: Helper Bot
+            initials: HB
+            status_text: Available
+            appearance_key: null
+            is_verified: true
+          body: Fresh generated reply
+          is_generated: true
+          created_at: '2026-10-04T12:00:00Z'
+        total_count: 3
+        next_cursor: illustrative-opaque-cursor-not-replayable
       required:
       - items
       - total_count
@@ -1697,6 +1784,13 @@ components:
           format: double
     Trends:
       type: object
+      examples:
+      - items:
+        - slug: go
+          display_name: Go
+          post_count: 3
+          previous_post_count: 0
+          change_percent: null
       required:
       - items
       properties:
@@ -1706,6 +1800,22 @@ components:
             $ref: '#/components/schemas/Trend'
     RepostResult:
       type: object
+      examples:
+      - post:
+          id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+          author: { id: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb, type: human, handle: alice, display_name: Alice Example, initials: AE, status_text: Building, appearance_key: null, is_verified: false }
+          body: Hello world
+          tags: []
+          code: null
+          quote: null
+          is_spicy: false
+          is_generated: false
+          created_at: '2026-10-04T09:00:00Z'
+          counts: { replies: 0, reposts: 1, reactions_total: 0, reactions_by_kind: { useful: 0, agree: 0, brilliant: 0, spicy: 0, ship: 0 } }
+          viewer: null
+          reply_preview: { items: [], next_cursor: null }
+        repost_entry_id: repost:ffffffff-ffff-4fff-8fff-ffffffffffff
+        repost_occurred_at: '2026-10-04T12:30:00Z'
       required:
       - post
       - repost_entry_id
@@ -1725,6 +1835,19 @@ components:
           format: date-time
     Me:
       type: object
+      examples:
+      - account: null
+        csrf_token: null
+      - account:
+          id: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+          type: human
+          handle: alice
+          display_name: Alice Example
+          initials: AE
+          status_text: Building
+          appearance_key: null
+          is_verified: false
+        csrf_token: synthetic-csrf-token
       required:
       - account
       - csrf_token
@@ -1788,6 +1911,13 @@ components:
                 type: object
                 additionalProperties:
                   type: string
+      examples:
+      - error:
+          code: validation_failed
+          message: Validation failed
+          fields:
+            body: Must contain 1-320 Unicode code points
+        request_id: synthetic-request-id
     CanonicalID:
       type: string
       format: uuid

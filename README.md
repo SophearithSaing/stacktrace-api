@@ -26,6 +26,7 @@ A failed build preserves the existing API. `dev-down` preserves development data
 and generated credentials in Git-ignored `.dev/`.
 
 Default API: `http://localhost:8080`; client origin: `http://localhost:5173`.
+The consumer API contract is [`docs/openapi.yaml`](docs/openapi.yaml).
 Use a different API port for another worktree, or override frontend origins:
 
 ```sh

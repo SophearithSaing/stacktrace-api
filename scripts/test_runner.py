@@ -398,7 +398,7 @@ class RunnerTests(unittest.TestCase):
                 set(fixture),
                 {
                     "account_id", "followed_id", "follower_count", "tag", "post_id",
-                    "body", "code", "counts", "quote_id", "quote_body", "reply_ids", "event_ids",
+                    "body", "code", "counts", "quote_id", "quote_body", "reply_ids", "event_ids", "search_post_id",
                 },
             )
             self.assertEqual((state / "smoke-fixture.json").stat().st_mode & 0o777, 0o600)

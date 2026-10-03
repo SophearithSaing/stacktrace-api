@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -132,8 +133,12 @@ func TestGenerationPublicationHTTPProvenance(t *testing.T) {
 
 func TestGeneratedReplyFreshNewestLongPageAndDeletion(t *testing.T) {
 	store, job, attempt, output := publicationFixture(t, app.OutputReply, "later generated reply")
+	oldAt := time.Now().UTC().Add(-time.Minute)
+	oldIDs := make([]app.ID, 0, app.DefaultReadLimit+1)
 	for index := range app.DefaultReadLimit + 1 {
-		feedExec(t, store, `INSERT INTO replies(id,post_id,author_id,body,created_at) VALUES($1,$2,$3,$4,$5)`, app.NewID(), *job.SourcePostID, job.AgentID, "older reply "+string(rune('a'+index)), time.Now().UTC().Add(-time.Minute))
+		id := app.NewID()
+		oldIDs = append(oldIDs, id)
+		feedExec(t, store, `INSERT INTO replies(id,post_id,author_id,body,created_at) VALUES($1,$2,$3,$4,$5)`, id, *job.SourcePostID, job.AgentID, "older reply "+string(rune('a'+index)), oldAt)
 	}
 	published, err := store.PublishGeneration(context.Background(), job.ID, job.LeaseVersion, attempt.ID, output)
 	if err != nil || published.ResultReplyID == nil {
@@ -151,9 +156,21 @@ func TestGeneratedReplyFreshNewestLongPageAndDeletion(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil || w.Code != http.StatusOK || len(page.Items) != app.DefaultReadLimit || page.Next == nil || page.Items[0].ID != *published.ResultReplyID || !page.Items[0].Generated {
 		t.Fatalf("fresh newest generated page=%d %s err=%v", w.Code, w.Body.String(), err)
 	}
+	sort.Slice(oldIDs, func(left, right int) bool { return oldIDs[left] > oldIDs[right] })
+	for index := 1; index < len(page.Items); index++ {
+		if page.Items[index].ID != oldIDs[index-1] || page.Items[index].Generated {
+			t.Fatalf("tied newest order=%+v want=%v", page.Items, oldIDs)
+		}
+	}
 	continued := contentRequest(handler, "GET", "/posts/"+string(*job.SourcePostID)+"/replies?sort=newest&cursor="+*page.Next, "", "", nil, "192.0.2.220")
-	if strings.Contains(continued.Body.String(), string(*published.ResultReplyID)) {
-		t.Fatalf("newest continuation duplicated generated reply=%s", continued.Body.String())
+	var rest struct {
+		Items []struct {
+			ID app.ID `json:"id"`
+		} `json:"items"`
+		Next *string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(continued.Body.Bytes(), &rest); err != nil || continued.Code != http.StatusOK || len(rest.Items) != 3 || rest.Next != nil || rest.Items[0].ID != oldIDs[19] || rest.Items[1].ID != oldIDs[20] || strings.Contains(continued.Body.String(), string(*published.ResultReplyID)) {
+		t.Fatalf("newest continuation=%d %s err=%v", continued.Code, continued.Body.String(), err)
 	}
 	feedExec(t, store, `UPDATE replies SET deleted_at=statement_timestamp() WHERE id=$1`, *published.ResultReplyID)
 	fresh := contentRequest(handler, "GET", "/posts/"+string(*job.SourcePostID)+"/replies?sort=newest&limit=20", "", "", nil, "192.0.2.220")

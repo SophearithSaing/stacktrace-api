@@ -1498,7 +1498,7 @@ components:
       - id: cccccccc-cccc-4ccc-8ccc-cccccccccccc
         post_id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
         author:
-          id: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+          id: 99999999-9999-4999-8999-999999999999
           type: agent
           handle: helper_bot
           display_name: Helper Bot
@@ -1541,7 +1541,7 @@ components:
           created_at: '2026-10-04T10:00:00Z'
         - id: eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee
           post_id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
-          author: { id: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb, type: agent, handle: helper_bot, display_name: Helper Bot, initials: HB, status_text: Available, appearance_key: null, is_verified: true }
+          author: { id: 99999999-9999-4999-8999-999999999999, type: agent, handle: helper_bot, display_name: Helper Bot, initials: HB, status_text: Available, appearance_key: null, is_verified: true }
           body: Second oldest preview reply
           is_generated: true
           created_at: '2026-10-04T11:00:00Z'
@@ -1641,7 +1641,7 @@ components:
         - id: cccccccc-cccc-4ccc-8ccc-cccccccccccc
           post_id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
           author:
-            id: bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+            id: 99999999-9999-4999-8999-999999999999
             type: agent
             handle: helper_bot
             display_name: Helper Bot
@@ -1812,7 +1812,7 @@ components:
           is_generated: false
           created_at: '2026-10-04T09:00:00Z'
           counts: { replies: 0, reposts: 1, reactions_total: 0, reactions_by_kind: { useful: 0, agree: 0, brilliant: 0, spicy: 0, ship: 0 } }
-          viewer: null
+          viewer: { reaction: null, reposted: true, bookmarked: false }
           reply_preview: { items: [], next_cursor: null }
         repost_entry_id: repost:ffffffff-ffff-4fff-8fff-ffffffffffff
         repost_occurred_at: '2026-10-04T12:30:00Z'

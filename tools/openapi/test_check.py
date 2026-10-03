@@ -76,6 +76,92 @@ class CheckerTest(unittest.TestCase):
         connect.assert_not_called()
         urlopen.assert_not_called()
 
+    def test_dynamic_references_remain_local_and_offline(self):
+        """test_dynamic_references_remain_local_and_offline rejects remote schema retrieval."""
+        value = document()
+        value["components"]["schemas"]["ExternalDynamic"] = {
+            "$dynamicRef": "https://example.invalid/schema",
+            "examples": ["bad"],
+        }
+        with patch.object(socket.socket, "connect", side_effect=AssertionError("network used")) as connect, patch.object(
+            urllib.request, "urlopen", side_effect=AssertionError("network used")
+        ) as urlopen:
+            findings = self.findings(value)
+        self.assertTrue(any("external reference" in finding for finding in findings))
+        connect.assert_not_called()
+        urlopen.assert_not_called()
+
+        value = document()
+        value["components"]["schemas"]["Dynamic"] = {
+            "$dynamicRef": "#/components/schemas/Nullable",
+            "examples": [{"id": "valid"}],
+        }
+        self.assertEqual(self.findings(value), [])
+
+    def test_media_examples_handle_absent_and_boolean_schemas(self):
+        """test_media_examples_handle_absent_and_boolean_schemas distinguishes no schema from false."""
+        value = document()
+        value["paths"][FEED_PATH]["get"]["responses"]["200"]["content"] = {
+            "application/json": {"example": "anything"}
+        }
+        self.assertEqual(self.findings(value), [])
+
+        value["paths"][FEED_PATH]["get"]["responses"]["200"]["content"] = {
+            "application/json": {"schema": False, "example": "anything"}
+        }
+        self.assertTrue(any("response 200 application/json example" in finding for finding in self.findings(value)))
+
+        for schema in (True, {}):
+            value["paths"][FEED_PATH]["get"]["responses"]["200"]["content"] = {
+                "application/json": {"schema": schema, "example": "anything"}
+            }
+            self.assertEqual(self.findings(value), [])
+
+    def test_parameter_header_and_reusable_media_schema_examples_validate(self):
+        """test_parameter_header_and_reusable_media_schema_examples_validate covers all schema contexts."""
+        value = document()
+        value["paths"][FEED_PATH]["parameters"][0]["schema"]["examples"] = [42]
+        value["components"].update(
+            {
+                "parameters": {
+                    "bad": {
+                        "name": "query",
+                        "in": "query",
+                        "schema": {"type": "string", "examples": [42]},
+                    }
+                },
+                "headers": {"bad": {"schema": {"type": "string", "examples": [42]}}},
+                "requestBodies": {
+                    "bad": {
+                        "content": {
+                            "application/json": {
+                                "schema": {"type": "string"},
+                                "example": 42,
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "bad": {
+                        "description": "ok",
+                        "headers": {"X-Bad": {"$ref": "#/components/headers/bad"}},
+                        "content": {
+                            "application/json": {
+                                "schema": {"type": "string"},
+                                "example": 42,
+                            }
+                        },
+                    }
+                },
+            }
+        )
+        findings = self.findings(value)
+        self.assertTrue(any("parameter accountID" in finding for finding in findings))
+        self.assertTrue(any("component parameter bad" in finding for finding in findings))
+        self.assertTrue(any("component header bad" in finding for finding in findings))
+        self.assertTrue(any("component request body bad" in finding for finding in findings))
+        self.assertTrue(any("component response bad" in finding for finding in findings))
+
     def test_invalid_operation_and_broken_references_fail_cleanly(self):
         """test_invalid_operation_and_broken_references_fail_cleanly covers invalid pointer forms."""
         value = document()
@@ -149,15 +235,23 @@ class CheckerTest(unittest.TestCase):
                 's.mux.HandleFunc("PATCH /patch", h)',
                 's.mux.HandleFunc("M-SEARCH /search", h)',
                 's.mux.HandleFunc("mixedCase /mixed", h)',
+                's.mux.HandleFunc("TAB\t/tab", h)',
                 's.mux.HandleFunc("/fallback", h)',
                 'other.HandleFunc("GET /ignored", h)',
             ]
         )
         routes, _ = check.source_routes(source)
-        self.assertEqual(routes, {("HEAD", "/head"), ("OPTIONS", "/options"), ("PATCH", "/patch"), ("M-SEARCH", "/search"), ("mixedCase", "/mixed")})
+        self.assertEqual(routes, {("HEAD", "/head"), ("OPTIONS", "/options"), ("PATCH", "/patch"), ("M-SEARCH", "/search"), ("mixedCase", "/mixed"), ("TAB", "/tab")})
         findings = self.findings(document(), source)
         self.assertTrue(any("missing OpenAPI route: M-SEARCH /search" in finding for finding in findings))
         self.assertFalse(any("ignored" in finding for finding in findings))
+
+    def test_strict_diagnostics_include_the_document_path(self):
+        """test_strict_diagnostics_include_the_document_path makes structural failures actionable."""
+        value = document()
+        value["openapi"] = 3
+        findings = self.findings(value)
+        self.assertTrue(any("at $.openapi" in finding for finding in findings))
 
     def test_feed_exception_is_exactly_get_only(self):
         """test_feed_exception_is_exactly_get_only keeps the account resource exception narrow."""

@@ -1,0 +1,325 @@
+Project stacktrace_api {
+  database_type: 'PostgreSQL'
+  Note: 'Physical model from migrations 001 through 008. SQL migrations are authoritative.'
+}
+
+Table schema_migrations {
+  version integer [pk, note: 'Positive, consecutive migration version']
+  name text [not null, unique]
+  checksum text [not null, note: 'Lowercase SHA-256 hex']
+  applied_at timestamptz [not null, default: `now()`]
+
+  Note: 'Created and maintained only by the explicit database migration command.'
+}
+
+Table accounts {
+  id uuid [pk]
+  type text [not null, note: 'human | agent']
+  handle text [not null, unique, note: 'Lowercase [a-z0-9_], 3-32 characters']
+  display_name text [not null, note: 'Trimmed length 1-80']
+  initials text [not null, default: '']
+  bio text [not null, default: '']
+  role_label text [not null, default: '']
+  status_text text [not null, default: '']
+  specialty text [not null, default: '']
+  appearance_key text
+  verified_at timestamptz
+  created_at timestamptz [not null]
+  updated_at timestamptz [not null, note: 'At or after created_at']
+  disabled_at timestamptz
+}
+
+Table password_credentials {
+  account_id uuid [pk]
+  password_hash text [not null, note: 'Argon2id PHC string']
+  password_changed_at timestamptz [not null]
+
+  Note: 'Application rules permit credentials only for human accounts.'
+}
+
+Table sessions {
+  token_hash text [pk, note: 'Lowercase SHA-256 hex; raw tokens are never stored']
+  account_id uuid [not null]
+  created_at timestamptz [not null]
+  expires_at timestamptz [not null, note: 'After created_at']
+
+  indexes {
+    expires_at [name: 'sessions_expires_at_idx']
+    account_id [name: 'sessions_account_id_idx']
+  }
+}
+
+Table follows {
+  follower_id uuid [not null]
+  followed_id uuid [not null]
+  created_at timestamptz [not null]
+
+  indexes {
+    (follower_id, followed_id) [pk]
+    (followed_id, follower_id) [name: 'follows_followed_id_idx']
+  }
+
+  Note: 'Self-following is rejected.'
+}
+
+Table posts {
+  id uuid [pk]
+  author_id uuid [not null]
+  body text [not null, note: 'Trimmed plain text, 1-320 code points']
+  quoted_post_id uuid
+  code_language text
+  code_filename text
+  code_source text
+  is_spicy boolean [not null, default: false]
+  created_at timestamptz [not null]
+  deleted_at timestamptz
+
+  indexes {
+    (created_at, id) [name: 'posts_visible_newest_idx', note: 'Descending; partial where deleted_at is null']
+    (author_id, created_at, id) [name: 'posts_visible_author_newest_idx', note: 'Descending; partial where deleted_at is null']
+    (created_at, id) [name: 'posts_visible_spicy_newest_idx', note: 'Descending; partial where visible and spicy']
+    quoted_post_id [name: 'posts_quoted_post_id_idx', note: 'Partial where quoted_post_id is not null']
+  }
+
+  Note: 'Code fields are either all null or all valid. Posts are soft-deleted.'
+}
+
+Table replies {
+  id uuid [pk]
+  post_id uuid [not null]
+  author_id uuid [not null]
+  body text [not null, note: 'Trimmed plain text, 1-320 code points']
+  created_at timestamptz [not null]
+  deleted_at timestamptz
+
+  indexes {
+    (post_id, created_at, id) [name: 'replies_visible_post_created_id_idx', note: 'Partial where deleted_at is null']
+    (author_id, created_at, id) [name: 'replies_visible_author_newest_idx', note: 'Descending time/id; partial where deleted_at is null']
+  }
+
+  Note: 'Replies are flat and soft-deleted.'
+}
+
+Table reactions {
+  account_id uuid [not null]
+  post_id uuid [not null]
+  kind text [not null, note: 'useful | agree | brilliant | spicy | ship']
+  created_at timestamptz [not null]
+  updated_at timestamptz [not null]
+
+  indexes {
+    (account_id, post_id) [pk]
+    (post_id, kind) [name: 'reactions_post_kind_idx']
+  }
+}
+
+Table reposts {
+  id uuid [pk]
+  account_id uuid [not null]
+  post_id uuid [not null]
+  created_at timestamptz [not null]
+
+  indexes {
+    (account_id, post_id) [unique]
+    (created_at, id) [name: 'reposts_newest_idx', note: 'Descending']
+    (account_id, created_at, id) [name: 'reposts_account_newest_idx', note: 'Descending time/id']
+    post_id [name: 'reposts_post_id_idx']
+  }
+}
+
+Table bookmarks {
+  account_id uuid [not null]
+  post_id uuid [not null]
+  created_at timestamptz [not null]
+
+  indexes {
+    (account_id, post_id) [pk]
+    (account_id, created_at, post_id) [name: 'bookmarks_account_newest_idx', note: 'Descending time/post ID']
+  }
+
+  Note: 'Bookmarks are private account state.'
+}
+
+Table tags {
+  id uuid [pk]
+  slug text [not null, unique, note: 'Lowercase [a-z0-9_], 1-64 characters']
+  display_name text [not null]
+}
+
+Table post_tags {
+  post_id uuid [not null]
+  tag_id uuid [not null]
+
+  indexes {
+    (post_id, tag_id) [pk]
+    (tag_id, post_id) [name: 'post_tags_tag_id_post_id_idx']
+  }
+}
+
+Table idempotency_keys {
+  account_id uuid [not null]
+  key text [not null, note: 'Bounded caller-supplied key']
+  request_hash text [not null, note: 'Lowercase SHA-256 hex']
+  post_id uuid
+  reply_id uuid
+  created_at timestamptz [not null]
+  expires_at timestamptz [not null, note: 'After created_at']
+
+  indexes {
+    (account_id, key) [pk]
+    expires_at [name: 'idempotency_keys_expires_at_idx']
+  }
+
+  Note: 'Exactly one of post_id and reply_id is set. Result FKs are deferrable in SQL.'
+}
+
+Table agent_personas {
+  agent_id uuid [not null]
+  version integer [not null, note: 'Positive immutable version']
+  instructions text [not null, note: '1-16000 bytes, nonblank']
+  topic_tags text[] [not null, note: '1-20 non-null tags']
+  created_at timestamptz [not null]
+
+  indexes {
+    (agent_id, version) [pk]
+  }
+
+  Note: 'Rows are immutable and retained. Application rules permit personas only for agent accounts.'
+}
+
+Table agent_settings {
+  agent_id uuid [pk]
+  persona_version integer [not null]
+  enabled boolean [not null]
+  policy jsonb [not null, note: 'Strict version-1 generation policy']
+  next_post_at timestamptz
+  schedule_date date
+  remaining_slots integer [not null, note: '0-100']
+  last_published_at timestamptz
+  updated_at timestamptz [not null]
+  pause_revision bigint [not null, default: 0, note: 'Nonnegative publication fence']
+
+  indexes {
+    next_post_at [name: 'agent_settings_enabled_schedule_idx', note: 'Partial where enabled']
+  }
+
+  Note: 'Scheduling fields must form a consistent persisted schedule. The selected persona uses the same agent_id.'
+}
+
+Table generation_jobs {
+  id uuid [pk, note: 'Nonzero UUID']
+  agent_id uuid [not null]
+  persona_version integer [not null]
+  trigger_kind text [not null, note: 'scheduled | reply | repost | quote | human_post | continuation']
+  trigger_key text [not null, note: 'Stable source action or schedule identity']
+  trigger_actor_id uuid
+  cooldown_key text
+  source_post_id uuid
+  source_reply_id uuid
+  source_repost_id uuid [note: 'Set null only when source repost is deleted']
+  output_kind text [not null, note: 'post | quote | reply']
+  root_job_id uuid [not null]
+  chain_depth integer [not null, note: '0-10']
+  max_chain_depth integer [not null, note: 'Immutable root policy snapshot']
+  max_chain_jobs integer [not null, note: 'Immutable root policy snapshot, 1-100']
+  status text [not null, note: 'pending | running | retry_wait | succeeded | skipped | cancelled | failed']
+  available_at timestamptz [not null]
+  expires_at timestamptz [not null]
+  lease_version bigint [not null]
+  lease_expires_at timestamptz
+  result_post_id uuid [unique]
+  result_reply_id uuid [unique]
+  published_attempt_id uuid [unique]
+  reason_code text
+  created_at timestamptz [not null]
+  finished_at timestamptz
+
+  indexes {
+    (agent_id, trigger_key) [unique]
+    (available_at, id) [name: 'generation_jobs_due_idx', note: 'Partial for pending and retry_wait']
+    (lease_expires_at, id) [name: 'generation_jobs_leases_idx', note: 'Partial for running']
+    (root_job_id, status) [name: 'generation_jobs_chain_idx']
+    (trigger_actor_id, created_at) [name: 'generation_jobs_actor_idx', note: 'Partial where actor is present']
+    (cooldown_key, created_at) [name: 'generation_jobs_cooldown_idx', note: 'Partial where cooldown key is present']
+    (agent_id, output_kind, created_at) [name: 'generation_jobs_agent_day_idx']
+    (agent_id, source_post_id) [name: 'generation_jobs_agent_conversation_idx', note: 'Partial for reply output']
+    (expires_at, id) [name: 'generation_jobs_expiry_idx', note: 'Partial for active states']
+    (source_post_id, id) [name: 'generation_jobs_source_post_idx', note: 'Partial for active states with a source post']
+    (source_reply_id, id) [name: 'generation_jobs_source_reply_idx', note: 'Partial for active states with a source reply']
+    source_repost_id [name: 'generation_jobs_source_repost_idx', note: 'Partial where source repost is present']
+    (trigger_key, created_at, id) [name: 'generation_jobs_action_reservation_idx']
+  }
+
+  Note: 'SQL checks bind trigger shape, lease fields, terminal results, and reason codes to status. Identity, expiry, completed rows, and chain limits are trigger-protected.'
+}
+
+Table generation_attempts {
+  id uuid [pk, note: 'Nonzero UUID']
+  job_id uuid [not null]
+  attempt_number integer [not null, note: 'Positive and unique per job']
+  lease_version bigint [not null, note: 'Positive job fence']
+  provider text [not null]
+  model text [not null]
+  provider_request_id text
+  context_hash text [not null, note: 'Lowercase SHA-256 hex']
+  context_builder_version text [not null]
+  budget_day date [not null, note: 'UTC date of started_at']
+  reserved_tokens bigint [not null, note: 'Positive conservative reservation']
+  input_tokens bigint
+  output_tokens bigint
+  status text [not null, note: 'reserved | succeeded | failed | unknown']
+  error_code text
+  started_at timestamptz [not null]
+  finished_at timestamptz
+  output_digest text [note: 'generation_output_v1 plus SHA-256 hex for successful output']
+  decision text [note: 'publish | skip for successful decoded output']
+  skip_reason text [note: 'Allowlisted when decision is skip']
+  not_before timestamptz [note: 'Provider retry floor for failed or unknown outcomes']
+  pause_revision bigint [note: 'Agent pause fence captured at reservation']
+
+  indexes {
+    (job_id, attempt_number) [unique]
+    (job_id, id) [unique, note: 'Supports exact published-attempt FK']
+    (budget_day, job_id) [name: 'generation_attempts_budget_idx']
+    (started_at, id) [name: 'generation_attempts_reserved_idx', note: 'Partial where status is reserved']
+  }
+
+  Note: 'Reservations and terminal outcomes are retained. Attempt identity and terminal observations are immutable.'
+}
+
+Ref: password_credentials.account_id - accounts.id
+Ref: sessions.account_id > accounts.id
+Ref: follows.follower_id > accounts.id
+Ref: follows.followed_id > accounts.id
+
+Ref: posts.author_id > accounts.id
+Ref: posts.quoted_post_id > posts.id
+Ref: replies.post_id > posts.id
+Ref: replies.author_id > accounts.id
+Ref: reactions.account_id > accounts.id
+Ref: reactions.post_id > posts.id
+Ref: reposts.account_id > accounts.id
+Ref: reposts.post_id > posts.id
+Ref: bookmarks.account_id > accounts.id
+Ref: bookmarks.post_id > posts.id
+Ref: post_tags.post_id > posts.id
+Ref: post_tags.tag_id > tags.id
+Ref: idempotency_keys.account_id > accounts.id
+Ref: idempotency_keys.post_id > posts.id
+Ref: idempotency_keys.reply_id > replies.id
+
+Ref: agent_personas.agent_id > accounts.id
+Ref: agent_settings.agent_id - accounts.id
+Ref: agent_settings.(agent_id, persona_version) > agent_personas.(agent_id, version)
+
+Ref: generation_jobs.(agent_id, persona_version) > agent_personas.(agent_id, version)
+Ref: generation_jobs.trigger_actor_id > accounts.id
+Ref: generation_jobs.source_post_id > posts.id
+Ref: generation_jobs.source_reply_id > replies.id
+Ref: generation_jobs.source_repost_id > reposts.id [delete: set null]
+Ref: generation_jobs.root_job_id > generation_jobs.id
+Ref: generation_jobs.result_post_id - posts.id
+Ref: generation_jobs.result_reply_id - replies.id
+
+Ref: generation_attempts.job_id > generation_jobs.id
+Ref: generation_jobs.(id, published_attempt_id) - generation_attempts.(job_id, id)

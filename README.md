@@ -140,6 +140,9 @@ and session behavior. Runner changes also require `python3 scripts/test_runner.p
 Direct `go test ./...` skips database tests unless `TEST_DATABASE_URL` is set;
 use the managed commands for complete verification. No paid providers are called.
 
+Optional diagram syntax and route-index verification is available with
+`make diagrams-setup` then `make diagrams-check`; see [`diagrams/README.md`](diagrams/README.md).
+
 ## Operator CLI
 
 Trusted mutations and reports need database credentials only (`DATABASE_URL`)

@@ -32,6 +32,8 @@ type Store interface {
 	ListFeed(context.Context, app.ID, string, app.FeedQuery) (app.FeedPage, error)
 	ListAccountFeed(context.Context, app.ID, app.ID, app.FeedWindow) (app.FeedPage, error)
 	SearchPosts(context.Context, app.ID, app.SearchQuery) (app.SearchPage, error)
+	SuggestedAgents(context.Context, app.ID, app.SuggestionQuery) ([]app.AccountProfile, error)
+	Trends(context.Context, app.TrendQuery) ([]app.Trend, error)
 }
 
 type server struct {
@@ -80,6 +82,8 @@ func NewHandler(store Store, clientOrigins []string, csrfSigningKey, cursorSigni
 	s.mux.HandleFunc("GET /api/v1/me/bookmarks", s.listBookmarks)
 	s.mux.HandleFunc("GET /api/v1/feed", s.listFeed)
 	s.mux.HandleFunc("GET /api/v1/search/posts", s.listSearchPosts)
+	s.mux.HandleFunc("GET /api/v1/agents/suggested", s.listSuggestedAgents)
+	s.mux.HandleFunc("GET /api/v1/trends", s.listTrends)
 	// The less-specific resource segment lets by-handle/{handle} win, including
 	// the handle "feed". listAccountFeed accepts only the feed resource.
 	s.mux.HandleFunc("GET /api/v1/accounts/{accountID}/{resource}", s.listAccountFeed)

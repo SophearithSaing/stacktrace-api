@@ -36,7 +36,7 @@ sequenceDiagram
         Store->>DB: Insert due scheduled post jobs
     end
 
-    Note right of WorkerLoop: HTTP requests finish after the durable database commit, generation is asynchronous
+    Note over Human,WorkerLoop: HTTP requests finish after the durable database commit,<br/>generation is asynchronous
 
     WorkerLoop->>Exec: Start bounded execution pass
     Exec->>Store: Ready

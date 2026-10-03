@@ -49,10 +49,25 @@ function mermaidBlocks(source, filename) {
   return blocks;
 }
 
+function routeIndexSection(markdown) {
+  const lines = markdown.split(/\r?\n/);
+  let inSection = false;
+  const section = [];
+  for (const line of lines) {
+    if (/^## Route index\s*$/.test(line)) {
+      inSection = true;
+      continue;
+    }
+    if (inSection && /^## /.test(line)) break;
+    if (inSection) section.push(line);
+  }
+  return section.join("\n");
+}
+
 function indexedEndpoints(markdown) {
   const endpoints = new Set();
-  for (const match of markdown.matchAll(/`((?:GET|POST|PUT|DELETE) \/[^`]+)`/g)) {
-    for (const endpoint of match[1].split(", `")) endpoints.add(endpoint.replace(/`$/, ""));
+  for (const match of routeIndexSection(markdown).matchAll(/`((?:GET|POST|PUT|DELETE) \/[^`]+)`/g)) {
+    endpoints.add(match[1]);
   }
   return endpoints;
 }
@@ -61,6 +76,9 @@ function registeredEndpoints(server) {
   const endpoints = new Set();
   for (const match of server.matchAll(/s\.mux\.HandleFunc\("(GET|POST|PUT|DELETE) ([^"]+)"/g)) {
     const endpoint = `${match[1]} ${match[2]}`;
+    // ServeMux registers the constrained wildcard as {resource} so by-handle/{handle}
+    // wins, but the handler only accepts the feed resource; the index documents
+    // the effective route as {accountID}/feed.
     endpoints.add(endpoint === "GET /api/v1/accounts/{accountID}/{resource}" ? "GET /api/v1/accounts/{accountID}/feed" : endpoint);
   }
   return endpoints;

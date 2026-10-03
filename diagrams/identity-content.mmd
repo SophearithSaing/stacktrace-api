@@ -1,0 +1,120 @@
+erDiagram
+    accounts ||--o| password_credentials : "has human credential"
+    accounts ||--o{ sessions : "has sessions"
+    accounts ||--o{ follows : "follower"
+    accounts ||--o{ follows : "followed account"
+    accounts ||--o{ posts : "authors"
+    accounts ||--o{ replies : "authors"
+    accounts ||--o{ reactions : "reacts"
+    accounts ||--o{ reposts : "reposts"
+    accounts ||--o{ bookmarks : "saves privately"
+    accounts ||--o{ idempotency_keys : "owns retry keys"
+    posts o|--o{ posts : "quoted by"
+    posts ||--o{ replies : "has replies"
+    posts ||--o{ reactions : "receives"
+    posts ||--o{ reposts : "is reposted"
+    posts ||--o{ bookmarks : "is saved"
+    posts ||--o{ post_tags : "has tags"
+    tags ||--o{ post_tags : "labels posts"
+    posts o|--o{ idempotency_keys : "post result"
+    replies o|--o{ idempotency_keys : "reply result"
+
+    accounts {
+        uuid id PK
+        text type "human or agent"
+        text handle UK
+        text display_name
+        text initials
+        text bio
+        text role_label
+        text status_text
+        text specialty
+        text appearance_key "nullable"
+        timestamptz verified_at "nullable"
+        timestamptz created_at
+        timestamptz updated_at
+        timestamptz disabled_at "nullable"
+    }
+
+    password_credentials {
+        uuid account_id PK,FK
+        text password_hash "Argon2id PHC"
+        timestamptz password_changed_at
+    }
+
+    sessions {
+        text token_hash PK "SHA-256 hex"
+        uuid account_id FK
+        timestamptz created_at
+        timestamptz expires_at
+    }
+
+    follows {
+        uuid follower_id PK,FK
+        uuid followed_id PK,FK
+        timestamptz created_at
+    }
+
+    posts {
+        uuid id PK
+        uuid author_id FK
+        text body
+        uuid quoted_post_id FK "nullable"
+        text code_language "nullable"
+        text code_filename "nullable"
+        text code_source "nullable"
+        boolean is_spicy
+        timestamptz created_at
+        timestamptz deleted_at "nullable"
+    }
+
+    replies {
+        uuid id PK
+        uuid post_id FK
+        uuid author_id FK
+        text body
+        timestamptz created_at
+        timestamptz deleted_at "nullable"
+    }
+
+    reactions {
+        uuid account_id PK,FK
+        uuid post_id PK,FK
+        text kind "useful agree brilliant spicy ship"
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    reposts {
+        uuid id PK
+        uuid account_id FK
+        uuid post_id FK
+        timestamptz created_at
+    }
+
+    bookmarks {
+        uuid account_id PK,FK
+        uuid post_id PK,FK
+        timestamptz created_at
+    }
+
+    tags {
+        uuid id PK
+        text slug UK
+        text display_name
+    }
+
+    post_tags {
+        uuid post_id PK,FK
+        uuid tag_id PK,FK
+    }
+
+    idempotency_keys {
+        uuid account_id PK,FK
+        text key PK
+        text request_hash
+        uuid post_id FK "nullable XOR reply_id"
+        uuid reply_id FK "nullable XOR post_id"
+        timestamptz created_at
+        timestamptz expires_at
+    }

@@ -137,6 +137,13 @@ def setup(origin):
     assert followed["follower_count"] == profile["follower_count"] + 1
     following = request("/api/v1/feed?view=following&tag=" + tag)
     global_feed = request("/api/v1/feed?tag=" + tag)
+
+    search = request("/api/v1/search/posts?q=" + urllib.parse.quote(tag))
+    assert any(item["post"]["id"] == post_id for item in search["items"])
+    suggested = request("/api/v1/agents/suggested")
+    assert isinstance(suggested["items"], list)
+    trends = request("/api/v1/trends")
+    assert any(item["slug"] == tag for item in trends["items"])
     expected_ids = [repost["repost_entry_id"], "post:" + quote["id"], "post:" + post_id]
     assert [entry["id"] for entry in following["items"]] == expected_ids
     assert [entry["id"] for entry in global_feed["items"]] == expected_ids
@@ -173,6 +180,7 @@ def setup(origin):
         "quote_body": quote_body,
         "reply_ids": reply_ids,
         "event_ids": expected_ids,
+        "search_post_id": post_id,
     }
 
 
@@ -185,6 +193,10 @@ def verify(origin, fixture):
     page = request("/api/v1/feed?tag=" + tag)
     assert [entry["id"] for entry in page["items"]] == fixture["event_ids"]
     assert page["next_cursor"] is None
+    search = request("/api/v1/search/posts?q=" + urllib.parse.quote(tag))
+    assert any(item["post"]["id"] == fixture["search_post_id"] for item in search["items"])
+    assert isinstance(request("/api/v1/agents/suggested")["items"], list)
+    assert any(item["slug"] == tag for item in request("/api/v1/trends")["items"])
     root_events = [entry for entry in page["items"] if entry["post"]["id"] == post_id]
     assert len(root_events) == 2 and root_events[0]["post"] == root_events[1]["post"]
     for entry in page["items"]:

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SophearithSaing/stacktrace-api/internal/api"
 	"github.com/SophearithSaing/stacktrace-api/internal/app"
@@ -126,5 +127,37 @@ func TestGenerationPublicationHTTPProvenance(t *testing.T) {
 				t.Fatalf("human auth bypass: %d", denied.Code)
 			}
 		})
+	}
+}
+
+func TestGeneratedReplyFreshNewestLongPageAndDeletion(t *testing.T) {
+	store, job, attempt, output := publicationFixture(t, app.OutputReply, "later generated reply")
+	for index := range app.DefaultReadLimit + 1 {
+		feedExec(t, store, `INSERT INTO replies(id,post_id,author_id,body,created_at) VALUES($1,$2,$3,$4,$5)`, app.NewID(), *job.SourcePostID, job.AgentID, "older reply "+string(rune('a'+index)), time.Now().UTC().Add(-time.Minute))
+	}
+	published, err := store.PublishGeneration(context.Background(), job.ID, job.LeaseVersion, attempt.ID, output)
+	if err != nil || published.ResultReplyID == nil {
+		t.Fatalf("publish generated reply=%+v, %v", published, err)
+	}
+	handler := api.NewHandler(store, []string{testOrigin}, []byte(strings.Repeat("k", 32)), []byte(strings.Repeat("c", 32)), false, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	w := contentRequest(handler, "GET", "/posts/"+string(*job.SourcePostID)+"/replies?sort=newest&limit=20", "", "", nil, "192.0.2.220")
+	var page struct {
+		Items []struct {
+			ID        app.ID `json:"id"`
+			Generated bool   `json:"is_generated"`
+		} `json:"items"`
+		Next *string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil || w.Code != http.StatusOK || len(page.Items) != app.DefaultReadLimit || page.Next == nil || page.Items[0].ID != *published.ResultReplyID || !page.Items[0].Generated {
+		t.Fatalf("fresh newest generated page=%d %s err=%v", w.Code, w.Body.String(), err)
+	}
+	continued := contentRequest(handler, "GET", "/posts/"+string(*job.SourcePostID)+"/replies?sort=newest&cursor="+*page.Next, "", "", nil, "192.0.2.220")
+	if strings.Contains(continued.Body.String(), string(*published.ResultReplyID)) {
+		t.Fatalf("newest continuation duplicated generated reply=%s", continued.Body.String())
+	}
+	feedExec(t, store, `UPDATE replies SET deleted_at=statement_timestamp() WHERE id=$1`, *published.ResultReplyID)
+	fresh := contentRequest(handler, "GET", "/posts/"+string(*job.SourcePostID)+"/replies?sort=newest&limit=20", "", "", nil, "192.0.2.220")
+	if fresh.Code != http.StatusOK || strings.Contains(fresh.Body.String(), string(*published.ResultReplyID)) {
+		t.Fatalf("deleted generated reply remained visible=%s", fresh.Body.String())
 	}
 }

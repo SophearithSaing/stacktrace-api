@@ -52,6 +52,48 @@ test("ignores routes mentioned outside the route index section", async (t) => {
   );
 });
 
+test("covers all HTTP method tokens", async (t) => {
+  const directory = await fixture(t, {
+    "endpoint-flows.md": index([
+      "PATCH /api/v1/items",
+      "HEAD /api/v1/items",
+      "OPTIONS /api/v1/items",
+    ]),
+    "server.go":
+      's.mux.HandleFunc("/healthz", healthz)\ns.mux.HandleFunc("PATCH /api/v1/items", patchHandler)\ns.mux.HandleFunc("HEAD /api/v1/items", headHandler)\ns.mux.HandleFunc("OPTIONS /api/v1/items", optionsHandler)\n',
+  });
+  const result = await checkDiagrams({
+    diagrams: directory,
+    server: path.join(directory, "server.go"),
+  });
+  assert.deepEqual(result, { mermaidCount: 0, dbmlCount: 0, routes: 3 });
+});
+
+test("reports missing and stale non-allowlist method routes", async (t) => {
+  let directory = await fixture(t, {
+    "endpoint-flows.md": index("GET /api/v1/items"),
+    "server.go": 's.mux.HandleFunc("PATCH /api/v1/items", patchHandler)\n',
+  });
+  await assert.rejects(
+    checkDiagrams({
+      diagrams: directory,
+      server: path.join(directory, "server.go"),
+    }),
+    /route index mismatch.*PATCH/,
+  );
+  directory = await fixture(t, {
+    "endpoint-flows.md": index("PATCH /api/v1/items"),
+    "server.go": 's.mux.HandleFunc("GET /api/v1/items", getHandler)\n',
+  });
+  await assert.rejects(
+    checkDiagrams({
+      diagrams: directory,
+      server: path.join(directory, "server.go"),
+    }),
+    /route index mismatch.*PATCH/,
+  );
+});
+
 test("reports malformed Mermaid sources, fenced blocks, and fences", async (t) => {
   for (const [name, source, message] of [
     ["flow.mmd", "flowchart TD\nA-->", /flow\.mmd: Parse error/],

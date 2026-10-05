@@ -5,21 +5,62 @@ make test: invoking that command is part of the behavior under test.
 """
 
 import concurrent.futures
+from datetime import datetime, timezone
+import fcntl
 import http.server
 import json
 import os
+import pty
+import select
 import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
+import termios
 import threading
 import time
 import unittest
+from unittest import mock
 import urllib.request
 from pathlib import Path
 
+# Importing local helpers must not leave untracked bytecode in the checkout.
+sys.dont_write_bytecode = True
+import immediate_response
+
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class ImmediateResponseTests(unittest.TestCase):
+    def test_live_rollover_guard_and_database_day(self):
+        with mock.patch.object(immediate_response, "datetime") as clock:
+            clock.now.return_value = datetime(2026, 10, 5, 23, 45, tzinfo=timezone.utc)
+            with self.assertRaises(AssertionError):
+                immediate_response.check_day(Path("live-response.fixture"), "2026-10-05")
+            # The no-spend fake path must still work late at night.
+            immediate_response.check_day(Path("response-check.fixture"), "2026-10-05")
+            clock.now.return_value = datetime(2026, 10, 5, 12, tzinfo=timezone.utc)
+            immediate_response.check_day(Path("live-response.fixture"), "2026-10-05")
+            with self.assertRaises(AssertionError):
+                immediate_response.check_day(Path("live-response.fixture"), "2026-10-06")
+
+    def test_partial_report_is_not_committed_and_existing_evidence_is_preserved(self):
+        parent = ROOT / ".dev/runner-checks"
+        parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="report.", dir=parent) as directory:
+            path = Path(directory) / "response-report.json"
+            with mock.patch.object(immediate_response.json, "dump", side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    immediate_response.write_private(path, {"attempts": []})
+            self.assertFalse(path.exists())
+            path.with_name(path.name + ".tmp").unlink()
+            immediate_response.write_private(path, {"attempts": []})
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            with self.assertRaises(AssertionError):
+                immediate_response.write_private(path, {"attempts": ["overwritten"]})
+            self.assertEqual(json.loads(path.read_text()), {"attempts": []})
 
 
 def free_port():
@@ -610,6 +651,183 @@ class RunnerTests(unittest.TestCase):
         self.assert_database_removed(state)
         self.command("bash", "scripts/dev.sh", "clean-run", str(state))
         self.assertFalse(state.exists())
+
+    def test_live_response_requires_interactive_approval(self):
+        runs_dir = self.checkout / ".dev/runs"
+        before = set(runs_dir.iterdir()) if runs_dir.exists() else set()
+        output = self.command("make", "live-response", expected=2)
+        self.assertIn("requires an interactive terminal; no provider call made", output)
+        self.assertNotIn(self.env["TOGETHER_API_KEY"], output)
+        self.assertEqual(set(runs_dir.iterdir()) if runs_dir.exists() else set(), before)
+
+    def test_live_response_hidden_invalid_key_never_calls_provider(self):
+        # Deliberately invalid syntax is rejected locally by NewTogether, before
+        # any network request. Exercise the actual interactive runner, not inference.
+        key = "invalid probe key with spaces"
+        main = self.checkout / "cmd/worker/main.go"
+        original = main.read_text()
+        probe = "PRIVATE_TOGETHER_DIAGNOSTIC_PROBE"
+        # Prove the real terminal-opening function reaches the PTY even after
+        # setsid, without manufacturing an HTTP request or using a provider key.
+        patched = original.replace(
+            "\t\tprovider, err = llm.NewTogether(cfg.TogetherAPIKey)\n",
+            '\t\tif diagnostics {\n'
+            '\t\t\tterminal, terminalErr := openProviderDiagnostics()\n'
+            '\t\t\tif terminalErr != nil { return errors.New("test terminal unavailable") }\n'
+            f'\t\t\tfmt.Fprintln(terminal, "{probe}")\n'
+            '\t\t\tterminal.Close()\n\t\t}\n'
+            '\t\tprovider, err = llm.NewTogether(cfg.TogetherAPIKey)\n',
+        )
+        self.assertNotEqual(patched, original)
+        main.write_text(patched)
+        master, slave = pty.openpty()
+        process = None
+        output = ""
+        try:
+            def control_terminal():
+                os.setsid()
+                fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+
+            process = subprocess.Popen(
+                ["bash", "scripts/dev.sh", "live-response"], cwd=self.checkout,
+                env=self.env, stdin=slave, stdout=slave, stderr=slave,
+                preexec_fn=control_terminal,
+            )
+            os.close(slave)
+            slave = None
+            approved = entered = False
+            deadline = time.monotonic() + 180
+            while time.monotonic() < deadline:
+                if select.select([master], [], [], 0.2)[0]:
+                    try:
+                        data = os.read(master, 65536)
+                    except OSError:
+                        break  # Linux PTY EOF after every slave closes.
+                    if not data:
+                        break
+                    output += data.decode(errors="replace")
+                if not approved and "Type LIVE to approve" in output:
+                    os.write(master, b"LIVE\n")
+                    approved = True
+                if not entered and "Together API key (hidden; worker only):" in output:
+                    os.write(master, (key + "\n").encode())
+                    entered = True
+                if process.poll() is not None:
+                    break
+            self.assertTrue(approved and entered, output)
+            self.assertEqual(process.wait(timeout=30), 1, output)
+            self.assertNotIn(key, output)
+            self.assertIn(probe, output)
+            self.assertNotIn(self.env["TOGETHER_API_KEY"], output)
+            self.assertNotIn("Immediate response passed", output)
+            runs = list((self.checkout / ".dev/runs").iterdir())
+            self.assertEqual(len(runs), 1)
+            state = runs[0]
+            record = json.loads((state / "response-report.json").read_text())
+            self.assertEqual(record["attempts"], [])
+            self.assertEqual(record["usage"]["attempts"], 0)
+            self.assertEqual(record["usage"]["charged_tokens"], 0)
+            self.assertIsNone(record["reply_id"])
+            for path in state.iterdir():
+                if path.is_file():
+                    self.assertNotIn(key.encode(), path.read_bytes(), str(path))
+                    self.assertNotIn(probe.encode(), path.read_bytes(), str(path))
+            self.assert_database_removed(state)
+            self.command("bash", "scripts/dev.sh", "clean-run", str(state))
+        finally:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                process.wait(timeout=120)
+            if slave is not None:
+                os.close(slave)
+            os.close(master)
+            main.write_text(original)
+
+    def test_immediate_response_concurrent_isolated_fake_checks(self):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            checks = [pool.submit(self.command, "make", "response-check", env=dict(self.env, PYTHONOPTIMIZE="2")) for _ in range(2)]
+            for check in checks:
+                output = check.result()
+                self.assertIn("Immediate trigger ready", output)
+                self.assertIn("calls=1 recovered=0 expired=0 published=1", output)
+                self.assertIn("Immediate response passed", output)
+                self.assertNotIn(self.env["TOGETHER_API_KEY"], output)
+        self.assertEqual(list((self.checkout / ".dev/runs").iterdir()), [])
+
+    def test_immediate_response_unknown_usage_fails_without_retry(self):
+        helper = self.checkout / "scripts/immediate_response.py"
+        original = helper.read_text()
+        try:
+            helper.write_text(original.replace('{"mode": "publish", "calls": 1}', '{"mode": "timeout", "calls": 1}'))
+            output = self.command("make", "response-check", expected=2)
+            self.assertNotIn("Immediate response passed", output)
+            self.assertNotIn(self.env["TOGETHER_API_KEY"], output)
+            runs = list((self.checkout / ".dev/runs").iterdir())
+            self.assertEqual(len(runs), 1)
+            state = runs[0]
+            record = json.loads((state / "response-report.json").read_text())
+            self.assertEqual(len(record["attempts"]), 1)
+            self.assertEqual(record["usage"]["attempts"], 1)
+            self.assertEqual(record["usage"]["charged_tokens"], 132096)
+            self.assertEqual(record["usage"]["known_tokens"], 0)
+            self.assertEqual(record["attempts"][0]["ErrorCode"], "provider_timeout")
+            self.assertIsNone(record["reply_id"])
+            self.assertEqual((state / "response-report.json").stat().st_mode & 0o777, 0o600)
+            self.assertIn('"action":"agent pause"', (state / "pause.log").read_text())
+            self.assertFalse(running(state / "api.pid"))
+            self.assertFalse(running(state / "job.pid"))
+            self.assertFalse((state / "password").exists())
+            self.assert_database_removed(state)
+            self.command("bash", "scripts/dev.sh", "clean-run", str(state))
+        finally:
+            helper.write_text(original)
+
+    def test_immediate_response_interrupt_preserves_unresolved_accounting(self):
+        harness = self.checkout / "cmd/worker/harness_test.go"
+        original = harness.read_text()
+        process = None
+        log = self.checkout / "interrupt-response.log"
+        try:
+            # Test-only blocking provider; never constructs Together or reads a key.
+            patched = original.replace(
+                "\tp.job = request.Job\n",
+                '\tp.job = request.Job\n\tif request.Job.TriggerKind == app.TriggerHumanPost {\n'
+                '\t\tif err := os.WriteFile(os.Getenv("RESPONSE_STARTED"), []byte("ready"), 0600); err != nil { p.t.Fatal(err) }\n'
+                '\t\ttime.Sleep(time.Minute)\n\t}\n',
+            )
+            self.assertNotEqual(patched, original)
+            harness.write_text(patched)
+            marker = self.checkout / "response-started"
+            with log.open("w") as output:
+                process = subprocess.Popen(
+                    ["bash", "scripts/dev.sh", "response-check"], cwd=self.checkout,
+                    env=dict(self.env, RESPONSE_STARTED=str(marker)),
+                    stdout=output, stderr=subprocess.STDOUT,
+                )
+                deadline = time.monotonic() + 120
+                while not marker.exists() and process.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.1)
+                self.assertTrue(marker.exists(), log.read_text())
+                process.send_signal(signal.SIGTERM)
+                self.assertEqual(process.wait(timeout=120), 143, log.read_text())
+            runs = list((self.checkout / ".dev/runs").iterdir())
+            self.assertEqual(len(runs), 1)
+            state = runs[0]
+            record = json.loads((state / "response-report.json").read_text())
+            self.assertEqual(len(record["attempts"]), 1)
+            self.assertEqual(record["attempts"][0]["Status"], "reserved")
+            self.assertEqual(record["usage"]["charged_tokens"], 132096)
+            self.assertIsNone(record["reply_id"])
+            self.assertIn('"action":"agent pause"', (state / "pause.log").read_text())
+            self.assertFalse(running(state / "job.pid"))
+            self.assertFalse(running(state / "api.pid"))
+            self.assert_database_removed(state)
+            self.command("bash", "scripts/dev.sh", "clean-run", str(state))
+        finally:
+            if process is not None and process.poll() is None:
+                process.terminate()
+                process.wait(timeout=120)
+            harness.write_text(original)
 
     def test_interrupt_cleans_up_active_test(self):
         probe = self.checkout / "internal/runnerprobe"

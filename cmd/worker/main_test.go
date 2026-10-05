@@ -13,12 +13,23 @@ import (
 
 func TestWorkerUsage(t *testing.T) {
 	t.Setenv("DATABASE_URL", "")
-	for _, args := range [][]string{nil, {"run"}, {"check", "extra"}, {"schedule", "extra"}, {"--help"}} {
+	for _, args := range [][]string{nil, {"run"}, {"check", "extra"}, {"schedule", "extra"}, {"--help"}, {"serve", "--provider-diagnostics"}, {"check", "--provider-diagnostics"}, {"execute", "--provider-diagnostics", "extra"}} {
 		var output bytes.Buffer
 		err := run(context.Background(), args, &output)
 		if err == nil || !strings.Contains(err.Error(), "usage: worker check") || output.Len() != 0 {
 			t.Fatalf("usage: %v", err)
 		}
+	}
+}
+
+func TestProviderDiagnosticsRequireDevelopmentBeforeOpeningDatabase(t *testing.T) {
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("DATABASE_URL", "postgres://user:private-password@127.0.0.1:1/database?sslmode=disable")
+	t.Setenv("TOGETHER_API_KEY", "private-test-key")
+	var output bytes.Buffer
+	err := run(context.Background(), []string{"execute", "--provider-diagnostics"}, &output)
+	if err == nil || !strings.Contains(err.Error(), "APP_ENV=development") || output.Len() != 0 || strings.Contains(err.Error(), "private-") {
+		t.Fatalf("unsafe diagnostic configuration: %v", err)
 	}
 }
 

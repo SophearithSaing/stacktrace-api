@@ -25,8 +25,9 @@ const (
 // Together performs one bounded, non-streaming call per Generate. It grants no
 // admission authority: callers must first commit a durable reservation.
 type Together struct {
-	apiKey string
-	client *http.Client
+	apiKey      string
+	client      *http.Client
+	diagnostics io.Writer
 }
 
 var _ app.GenerationProvider = (*Together)(nil)
@@ -60,6 +61,17 @@ func NewTogether(apiKey string) (*Together, error) {
 		Timeout:       RequestTimeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}, nil
+}
+
+// NewTogetherWithDiagnostics enables bounded, redacted HTTP errors and adapter
+// rejection metadata on a private writer, never domain outcomes or storage.
+func NewTogetherWithDiagnostics(apiKey string, output io.Writer) (*Together, error) {
+	provider, err := NewTogether(apiKey)
+	if err != nil {
+		return nil, err
+	}
+	provider.diagnostics = output
+	return provider, nil
 }
 
 type togetherMessage struct {
@@ -131,6 +143,7 @@ func (t *Together) Generate(ctx context.Context, request app.GenerationRequest) 
 	notBefore := togetherRetryNotBefore(response.Header, time.Now())
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxTogetherResponseBytes+1))
 	if response.StatusCode != http.StatusOK {
+		t.reportHTTPFailure(response.StatusCode, requestID, data, err, prompt, request)
 		code := ClassifyHTTPFailure(response.StatusCode)
 		// Error bodies carry no usable accounting. An interrupted body must not
 		// turn an already-known credential/configuration stop into a retry.
@@ -147,7 +160,7 @@ func (t *Together) Generate(ctx context.Context, request app.GenerationRequest) 
 		return app.GenerationOutcome{Failure: app.GenerationInvalidOutput,
 			ProviderRequestID: requestID, NotBefore: notBefore}
 	}
-	outcome := decodeTogetherCompletion(data, request)
+	outcome, rejection := decodeTogetherCompletion(data, request)
 	if ctx.Err() != nil {
 		return app.GenerationOutcome{Failure: togetherTransportFailure(ctx, ctx.Err()),
 			ProviderRequestID: requestID, NotBefore: notBefore}
@@ -157,6 +170,7 @@ func (t *Together) Generate(ctx context.Context, request app.GenerationRequest) 
 	}
 	outcome.ProviderRequestID = requestID
 	if outcome.Failure != "" {
+		t.reportCompletionFailure(requestID, outcome.Failure, rejection, data, prompt, request)
 		outcome.NotBefore = notBefore
 	}
 	return outcome

@@ -10,48 +10,57 @@ import (
 	"github.com/SophearithSaing/stacktrace-api/internal/app"
 )
 
-// decodeTogetherCompletion strictly decodes a Together completion into a generation outcome.
-func decodeTogetherCompletion(data []byte, request app.GenerationRequest) app.GenerationOutcome {
+// decodeTogetherCompletion strictly decodes a completion and returns a fixed
+// private rejection hint without adding provider data to the domain outcome.
+func decodeTogetherCompletion(data []byte, request app.GenerationRequest) (app.GenerationOutcome, string) {
 	outcome := app.GenerationOutcome{Failure: app.GenerationInvalidOutput}
 	if !utf8.Valid(data) {
-		return outcome
+		return outcome, "response_invalid_utf8"
 	}
 	// Explicit metadata allowlists follow the documented non-streaming response.
 	// Unknown/aliased fields fail closed instead of silently enabling new semantics.
 	envelope, ok := togetherObject(data, "id", "object", "created", "model", "choices", "usage", "prompt", "warnings")
 	if !ok {
-		return outcome
+		return outcome, "response_envelope_invalid"
 	}
-	usage, unsupported := DecodeUsage(envelope["usage"])
+	usage, usageRejection := decodeUsage(envelope["usage"])
+	unsupported := usageRejection != ""
 	assessment := AssessUsage(usage, false, unsupported)
 	if assessment.StopExecution {
 		outcome.Failure = app.GenerationAccountingUnsupported
-		return outcome
+		if unsupported {
+			return outcome, usageRejection
+		}
+		return outcome, "usage_token_limits_exceeded"
 	}
 	// The completion ID is optional; Generate sanitizes it before returning it.
 	outcome.ProviderRequestID, _ = togetherString(envelope["id"])
 	model, ok := togetherString(envelope["model"])
-	if !ok || model != Model {
+	if !ok {
+		outcome.Failure = app.GenerationAccountingUnsupported
+		return outcome, "model_missing_or_invalid"
+	}
+	if model != Model {
 		// Usage from a different model is outside the reviewed accounting contract.
 		outcome.Failure = app.GenerationAccountingUnsupported
-		return outcome
+		return outcome, "model_mismatch"
 	}
 	if object, exists := envelope["object"]; exists {
 		if name, ok := togetherString(object); !ok || name != "chat.completion" {
-			return outcome
+			return outcome, "response_object_invalid"
 		}
 	}
 	var choices []json.RawMessage
 	if json.Unmarshal(envelope["choices"], &choices) != nil || len(choices) != 1 {
-		return outcome
+		return outcome, "choice_count_invalid"
 	}
 	choice, ok := togetherObject(choices[0], "index", "finish_reason", "message", "text", "seed", "logprobs", "top_logprobs")
 	if !ok || !bytes.Equal(bytes.TrimSpace(choice["index"]), []byte("0")) {
-		return outcome
+		return outcome, "choice_envelope_invalid"
 	}
 	message, ok := togetherObject(choice["message"], "role", "content", "tool_calls", "function_call", "reasoning", "reasoning_content")
 	if !ok {
-		return outcome
+		return outcome, "message_envelope_invalid"
 	}
 	outcome.InputTokens, outcome.OutputTokens = assessment.InputTokens, assessment.OutputTokens
 	finish, _ := togetherString(choice["finish_reason"])
@@ -62,23 +71,24 @@ func decodeTogetherCompletion(data []byte, request app.GenerationRequest) app.Ge
 		outcome.Failure = completionFailure
 		if completionFailure == app.GenerationAccountingUnsupported {
 			outcome.InputTokens, outcome.OutputTokens = nil, nil
+			return outcome, "reasoning_metadata_present"
 		}
-		return outcome
+		return outcome, "finish_reason_or_tools_rejected"
 	}
 	role, _ := togetherString(message["role"])
 	content, ok := togetherString(message["content"])
 	if role != "assistant" || !ok {
-		return outcome
+		return outcome, "assistant_content_invalid"
 	}
 	result, err := app.DecodeGenerationResult([]byte(content), request.Job)
 	if err != nil {
-		return outcome
+		return outcome, "output_contract_invalid"
 	}
 	// Context was built and bound locally, not supplied by the provider. Extract
 	// only public recent content for the same heuristic used at publication.
 	var public app.PublicGenerationContext
 	if json.Unmarshal([]byte(request.Context.PublicJSON()), &public) != nil {
-		return outcome
+		return outcome, "local_context_invalid"
 	}
 	recent := make([]app.Content, 0, len(public.RecentAgentContent))
 	for _, item := range public.RecentAgentContent {
@@ -89,10 +99,12 @@ func decodeTogetherCompletion(data []byte, request app.GenerationRequest) app.Ge
 		outcome.Result, outcome.Failure = result, ""
 	case app.ErrGenerationUnsafe:
 		outcome.Failure = app.GenerationUnsafeOutput
+		return outcome, "output_safety_rejected"
 	case app.ErrGenerationRepetition:
 		outcome.Failure = app.GenerationRepeatedOutput
+		return outcome, "output_repetition_rejected"
 	}
-	return outcome
+	return outcome, ""
 }
 
 // togetherHasToolCalls accepts absent, null or empty tool lists as no calls.

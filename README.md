@@ -96,6 +96,15 @@ Live evaluation and the MVP acceptance gate remain pending explicit approval:
 implementation completion does not authorize paid calls, credential access, or
 enabling live agents. Ordinary tests and smoke checks never call paid providers.
 
+Together HTTP failures also display their status, request ID and bounded/redacted
+JSON error message directly on the private terminal, never in retained logs or API
+responses. HTTP 200 responses rejected by the adapter show the exact rejection
+stage and bounded usage-field names/types, numeric token counts, model name,
+finish reason and reasoning-presence/length metadata, never generated/reasoning
+text. Do not record or share that terminal output without reviewing it for
+sensitive provider-quoted text. Ordinary worker execution keeps diagnostics off;
+manual development execution can opt in with `worker execute --provider-diagnostics`.
+
 ## Package layout
 
 ```text

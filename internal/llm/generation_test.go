@@ -114,34 +114,45 @@ func TestGenerationUsageAssessment(t *testing.T) {
 		accounted   int64
 		known, stop bool
 	}{
-		"known":               {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120}`, 120, true, false},
-		"zero output":         {`{"prompt_tokens":100,"completion_tokens":0,"total_tokens":100}`, 100, true, false},
-		"local targets":       {`{"prompt_tokens":8192,"completion_tokens":1024,"total_tokens":9216}`, 9216, true, false},
-		"above tiny estimate": {`{"prompt_tokens":8000,"completion_tokens":20,"total_tokens":8020}`, 8020, true, false},
-		"missing":             {`{}`, 132096, false, false},
-		"absent":              {``, 132096, false, false},
-		"null":                {`null`, 132096, false, false},
-		"partial":             {`{"prompt_tokens":100}`, 132096, false, false},
-		"null count":          {`{"prompt_tokens":null,"completion_tokens":20,"total_tokens":120}`, 132096, false, false},
-		"negative":            {`{"prompt_tokens":-1,"completion_tokens":20,"total_tokens":19}`, 132096, false, false},
-		"negative output":     {`{"prompt_tokens":100,"completion_tokens":-1,"total_tokens":99}`, 132096, false, false},
-		"negative total":      {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":-120}`, 132096, false, false},
-		"zero prompt":         {`{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`, 132096, false, false},
-		"inconsistent":        {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":121}`, 132096, false, false},
-		"input over target":   {`{"prompt_tokens":8193,"completion_tokens":0,"total_tokens":8193}`, 132096, false, true},
-		"output over target":  {`{"prompt_tokens":100,"completion_tokens":1025,"total_tokens":1125}`, 132096, false, true},
-		"partial over target": {`{"total_tokens":9217}`, 132096, false, true},
-		"provider ceiling":    {`{"prompt_tokens":131072,"completion_tokens":1024,"total_tokens":132096}`, 132096, false, true},
-		"beyond ceiling":      {`{"prompt_tokens":131073,"completion_tokens":1024,"total_tokens":132097}`, 132096, false, true},
-		"overflow":            {`{"prompt_tokens":9223372036854775807,"completion_tokens":9223372036854775807,"total_tokens":-2}`, 132096, false, true},
-		"negative extremes":   {`{"prompt_tokens":-9223372036854775808,"completion_tokens":-9223372036854775808,"total_tokens":0}`, 132096, false, false},
-		"integer overflow":    {`{"prompt_tokens":9223372036854775808}`, 132096, false, true},
-		"reasoning":           {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"reasoning_tokens":1}`, 132096, false, true},
-		"case alias":          {`{"Prompt_tokens":100}`, 132096, false, true},
-		"duplicate":           {`{"prompt_tokens":100,"prompt_tokens":1}`, 132096, false, true},
-		"trailing":            {`{} {}`, 132096, false, true},
-		"fraction":            {`{"prompt_tokens":1.5}`, 132096, false, true},
-		"unknown null":        {`{"unknown":null}`, 132096, false, true},
+		"known":                {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120}`, 120, true, false},
+		"zero cached":          {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"cached_tokens":0}`, 120, true, false},
+		"some cached":          {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"cached_tokens":80}`, 120, true, false},
+		"all cached":           {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"cached_tokens":100}`, 120, true, false},
+		"null cached":          {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"cached_tokens":null}`, 120, true, false},
+		"negative cached":      {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"cached_tokens":-1}`, 132096, false, true},
+		"over cached":          {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"cached_tokens":101}`, 132096, false, true},
+		"cached without input": {`{"completion_tokens":20,"total_tokens":120,"cached_tokens":0}`, 132096, false, true},
+		"fractional cached":    {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"cached_tokens":0.5}`, 132096, false, true},
+		"string cached":        {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"cached_tokens":"0"}`, 132096, false, true},
+		"duplicate cached":     {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"cached_tokens":0,"cached_tokens":0}`, 132096, false, true},
+		"aliased cached":       {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"Cached_tokens":0}`, 132096, false, true},
+		"zero output":          {`{"prompt_tokens":100,"completion_tokens":0,"total_tokens":100}`, 100, true, false},
+		"local targets":        {`{"prompt_tokens":8192,"completion_tokens":1024,"total_tokens":9216}`, 9216, true, false},
+		"above tiny estimate":  {`{"prompt_tokens":8000,"completion_tokens":20,"total_tokens":8020}`, 8020, true, false},
+		"missing":              {`{}`, 132096, false, false},
+		"absent":               {``, 132096, false, false},
+		"null":                 {`null`, 132096, false, false},
+		"partial":              {`{"prompt_tokens":100}`, 132096, false, false},
+		"null count":           {`{"prompt_tokens":null,"completion_tokens":20,"total_tokens":120}`, 132096, false, false},
+		"negative":             {`{"prompt_tokens":-1,"completion_tokens":20,"total_tokens":19}`, 132096, false, false},
+		"negative output":      {`{"prompt_tokens":100,"completion_tokens":-1,"total_tokens":99}`, 132096, false, false},
+		"negative total":       {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":-120}`, 132096, false, false},
+		"zero prompt":          {`{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`, 132096, false, false},
+		"inconsistent":         {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":121}`, 132096, false, false},
+		"input over target":    {`{"prompt_tokens":8193,"completion_tokens":0,"total_tokens":8193}`, 132096, false, true},
+		"output over target":   {`{"prompt_tokens":100,"completion_tokens":1025,"total_tokens":1125}`, 132096, false, true},
+		"partial over target":  {`{"total_tokens":9217}`, 132096, false, true},
+		"provider ceiling":     {`{"prompt_tokens":131072,"completion_tokens":1024,"total_tokens":132096}`, 132096, false, true},
+		"beyond ceiling":       {`{"prompt_tokens":131073,"completion_tokens":1024,"total_tokens":132097}`, 132096, false, true},
+		"overflow":             {`{"prompt_tokens":9223372036854775807,"completion_tokens":9223372036854775807,"total_tokens":-2}`, 132096, false, true},
+		"negative extremes":    {`{"prompt_tokens":-9223372036854775808,"completion_tokens":-9223372036854775808,"total_tokens":0}`, 132096, false, false},
+		"integer overflow":     {`{"prompt_tokens":9223372036854775808}`, 132096, false, true},
+		"reasoning":            {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"reasoning_tokens":1}`, 132096, false, true},
+		"case alias":           {`{"Prompt_tokens":100}`, 132096, false, true},
+		"duplicate":            {`{"prompt_tokens":100,"prompt_tokens":1}`, 132096, false, true},
+		"trailing":             {`{} {}`, 132096, false, true},
+		"fraction":             {`{"prompt_tokens":1.5}`, 132096, false, true},
+		"unknown null":         {`{"unknown":null}`, 132096, false, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			usage, unsupported := DecodeUsage([]byte(test.raw))
@@ -158,5 +169,20 @@ func TestGenerationUsageAssessment(t *testing.T) {
 				t.Fatal("unsupported accounting settled usage")
 			}
 		})
+	}
+}
+
+func TestGenerationCachedTokensAssessment(t *testing.T) {
+	input, output, total := int64(100), int64(20), int64(120)
+	for _, cached := range []int64{-1, 0, 80, 100, 101} {
+		usage := &Usage{PromptTokens: &input, CompletionTokens: &output, TotalTokens: &total, CachedTokens: &cached}
+		assessment := AssessUsage(usage, false, false)
+		if cached < 0 || cached > input {
+			if !assessment.StopExecution || assessment.AccountedTokens != ReservedTokensPerCall || assessment.InputTokens != nil {
+				t.Fatal("invalid cached subset settled accounting")
+			}
+		} else if assessment.StopExecution || assessment.AccountedTokens != total {
+			t.Fatal("cache metadata discounted or stopped known accounting")
+		}
 	}
 }

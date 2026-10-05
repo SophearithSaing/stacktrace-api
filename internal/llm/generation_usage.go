@@ -6,8 +6,8 @@ import (
 	"io"
 )
 
-// DecodeUsage rejects duplicate, unknown and case-alias fields. Unknown token
-// details may change billing semantics: the caller must stop for review. Missing
+// DecodeUsage accepts standard counters and the cached prompt-token subset,
+// rejecting duplicate, unknown and case-alias fields. Missing
 // or null counts are merely unknown, never zero. No untrusted data is returned
 // in an error or diagnostic. The entire provider response must also be bounded.
 func DecodeUsage(data []byte) (usage *Usage, unsupported bool) {
@@ -23,7 +23,7 @@ func DecodeUsage(data []byte) (usage *Usage, unsupported bool) {
 		return nil, true
 	}
 	result := &Usage{}
-	fields := map[string]**int64{"prompt_tokens": &result.PromptTokens, "completion_tokens": &result.CompletionTokens, "total_tokens": &result.TotalTokens}
+	fields := map[string]**int64{"prompt_tokens": &result.PromptTokens, "completion_tokens": &result.CompletionTokens, "total_tokens": &result.TotalTokens, "cached_tokens": &result.CachedTokens}
 	seen := map[string]bool{}
 	for decoder.More() {
 		token, err := decoder.Token()
@@ -40,6 +40,9 @@ func DecodeUsage(data []byte) (usage *Usage, unsupported bool) {
 		return nil, true
 	}
 	if decoder.Decode(new(any)) != io.EOF {
+		return nil, true
+	}
+	if result.CachedTokens != nil && (*result.CachedTokens < 0 || result.PromptTokens == nil || *result.CachedTokens > *result.PromptTokens) {
 		return nil, true
 	}
 	return result, false
@@ -61,6 +64,9 @@ type UsageAssessment struct {
 func AssessUsage(usage *Usage, uncertain, unsupported bool) UsageAssessment {
 	assessment := UsageAssessment{AccountedTokens: ReservedTokensPerCall, StopExecution: unsupported}
 	if usage != nil {
+		if usage.CachedTokens != nil && (*usage.CachedTokens < 0 || usage.PromptTokens == nil || *usage.CachedTokens > *usage.PromptTokens) {
+			assessment.StopExecution = true
+		}
 		if usage.PromptTokens != nil && *usage.PromptTokens > MaxInputTokens || usage.CompletionTokens != nil && *usage.CompletionTokens > MaxOutputTokens || usage.TotalTokens != nil && *usage.TotalTokens > MaxInputTokens+MaxOutputTokens {
 			assessment.StopExecution = true
 		}

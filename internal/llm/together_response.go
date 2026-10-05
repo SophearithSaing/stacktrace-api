@@ -56,7 +56,7 @@ func decodeTogetherCompletion(data []byte, request app.GenerationRequest) app.Ge
 	outcome.InputTokens, outcome.OutputTokens = assessment.InputTokens, assessment.OutputTokens
 	finish, _ := togetherString(choice["finish_reason"])
 	completionFailure := CompletionFailure(finish,
-		togetherPresent(message["tool_calls"]) || togetherPresent(message["function_call"]),
+		togetherHasToolCalls(message["tool_calls"]) || togetherPresent(message["function_call"]),
 		togetherPresent(message["reasoning"]) || togetherPresent(message["reasoning_content"]))
 	if completionFailure != "" {
 		outcome.Failure = completionFailure
@@ -93,6 +93,16 @@ func decodeTogetherCompletion(data []byte, request app.GenerationRequest) app.Ge
 		outcome.Failure = app.GenerationRepeatedOutput
 	}
 	return outcome
+}
+
+// togetherHasToolCalls accepts absent, null or empty tool lists as no calls.
+// Nonempty lists and malformed/non-list values remain unusable for generation.
+func togetherHasToolCalls(data []byte) bool {
+	if !togetherPresent(data) {
+		return false
+	}
+	var calls []json.RawMessage
+	return json.Unmarshal(data, &calls) != nil || len(calls) != 0
 }
 
 // togetherObject avoids encoding/json's last-key-wins and case folding. Values

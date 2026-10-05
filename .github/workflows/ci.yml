@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# CI never receives provider credentials. HTTP fixtures and smoke use fakes.
+env:
+  TOGETHER_API_KEY: ""
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Prepare disposable PostgreSQL
+        run: |
+          timeout 20 docker info
+          timeout 180 docker pull postgres:18
+      - name: Check formatting and dependencies
+        run: |
+          test -z "$(gofmt -l .)"
+          go mod verify
+      - name: Lint GitHub Actions workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - name: Build, vet, test and race
+        run: make check
+      - name: Check API and worker lifecycle
+        run: make smoke
+      - name: Check immediate fake-provider publication
+        run: make response-check
+      - name: Preserve failure logs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: backend-failure-logs
+          retention-days: 7
+          if-no-files-found: ignore
+          include-hidden-files: true
+          # Do not upload databases, signing keys, passwords or JSON fixtures.
+          path: |
+            .dev/runs/*/commands.log
+            .dev/runs/*/job.log
+            .dev/runs/*/postgres.log
+            .dev/runs/*/api.log
+            .dev/runs/*/serve-*.log
+
+  runner:
+    name: Runner lifecycle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Prepare disposable PostgreSQL
+        run: |
+          timeout 20 docker info
+          timeout 180 docker pull postgres:18
+      - name: Check lifecycle, failures and concurrent isolation
+        run: python3 -B scripts/test_runner.py
+      - name: Preserve failure logs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runner-failure-logs
+          retention-days: 7
+          if-no-files-found: ignore
+          include-hidden-files: true
+          # Only allowlisted logs, never the private checkout or runtime state.
+          path: |
+            .dev/runner-checks/checkout.*/interrupt*.log
+            .dev/runner-checks/checkout.*/.dev/runs/*/commands.log
+            .dev/runner-checks/checkout.*/.dev/runs/*/job.log
+            .dev/runner-checks/checkout.*/.dev/runs/*/postgres.log
+            .dev/runner-checks/checkout.*/.dev/runs/*/api.log
+            .dev/runner-checks/checkout.*/.dev/runs/*/serve-*.log
+
+  contracts:
+    name: Contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tools/openapi/requirements.lock
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: tools/diagrams/package-lock.json
+      - name: Install locked contract tooling
+        run: |
+          make openapi-setup
+          make diagrams-setup
+      - name: Test and validate OpenAPI
+        run: |
+          tools/openapi/.venv/bin/python -B -m unittest discover -s tools/openapi
+          make openapi-check
+      - name: Test and validate diagrams
+        run: |
+          npm --prefix tools/diagrams test
+          make diagrams-check

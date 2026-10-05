@@ -169,6 +169,14 @@ and session behavior. Runner changes also require `python3 scripts/test_runner.p
 Direct `go test ./...` skips database tests unless `TEST_DATABASE_URL` is set;
 use the managed commands for complete verification. No paid providers are called.
 
+GitHub Actions runs **Backend**, **Runner lifecycle**, and **Contracts** checks on
+pull requests, pushes to `main`, and manual dispatch. CI uses Go from `go.mod`,
+Docker PostgreSQL 18, Python 3.12, and Node 26 for contract tooling. It invokes the
+same verification commands above, plus OpenAPI/diagram tooling tests. No provider
+secrets or paid checks are used. Failed database jobs retain only allowlisted logs
+for seven days, never databases, keys, or JSON fixtures. Workflow:
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+
 Optional diagram syntax and route-index verification is available with
 `make diagrams-setup` then `make diagrams-check`; see [`diagrams/README.md`](diagrams/README.md).
 

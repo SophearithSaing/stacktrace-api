@@ -28,8 +28,12 @@ func main() {
 
 // run parses configuration and runs the requested worker command.
 func run(ctx context.Context, args []string, output io.Writer) error {
+	diagnostics := len(args) == 2 && args[0] == "execute" && args[1] == "--provider-diagnostics"
+	if diagnostics {
+		args = args[:1]
+	}
 	if len(args) != 1 || (args[0] != "check" && args[0] != "schedule" && args[0] != "execute" && args[0] != "serve") {
-		return errors.New("usage: worker check | schedule | execute | serve (read-only preflight | bounded enqueue pass | bounded generation pass | continuous serve)")
+		return errors.New("usage: worker check | schedule | execute [--provider-diagnostics] | serve (read-only preflight | bounded enqueue pass | bounded generation pass | continuous serve)")
 	}
 	// Includes opening the database, not just the preflight queries.
 	deadline := 10 * time.Second
@@ -63,6 +67,21 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 		if err != nil {
 			return worker.ExecutionConfiguration
 		}
+		if diagnostics {
+			if cfg.Environment != "development" {
+				return errors.New("provider diagnostics require APP_ENV=development and a private interactive terminal")
+			}
+			// Bypass stdout/stderr and the runner's retained logs entirely.
+			terminal, err := openProviderDiagnostics()
+			if err != nil {
+				return errors.New("provider diagnostics require a private interactive terminal")
+			}
+			defer terminal.Close()
+			provider, err = llm.NewTogetherWithDiagnostics(cfg.TogetherAPIKey, terminal)
+			if err != nil {
+				return worker.ExecutionConfiguration
+			}
+		}
 	}
 	store, err := postgres.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
@@ -91,6 +110,15 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 	}
 	_, err = fmt.Fprintf(output, "Check-only configuration OK: configured=%d enabled=%d; no generation executed\n", summary.Configured, summary.Enabled)
 	return err
+}
+
+// openProviderDiagnostics opens a private terminal, using the runner's inherited
+// terminal descriptor when its owned worker session has no controlling terminal.
+func openProviderDiagnostics() (*os.File, error) {
+	if target, err := os.Readlink("/proc/self/fd/3"); err == nil && target == "/dev/tty" {
+		return os.NewFile(3, "provider diagnostics terminal"), nil
+	}
+	return os.OpenFile("/dev/tty", os.O_WRONLY, 0)
 }
 
 // reportSchedule writes a safe generation scheduling report.

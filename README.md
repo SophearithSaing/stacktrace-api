@@ -96,6 +96,32 @@ Live evaluation and the MVP acceptance gate remain pending explicit approval:
 implementation completion does not authorize paid calls, credential access, or
 enabling live agents. Ordinary tests and smoke checks never call paid providers.
 
+For an immediate, isolated Together integration test (no next-day scheduling):
+
+```sh
+make response-check # no-spend verification using a test-only fake provider
+make live-response  # interactive paid test; asks for approval and a hidden API key
+```
+
+The live check creates one synthetic human post mentioning `@golang`, then runs
+one worker execution pass and verifies its persisted generated reply and known
+token usage. It uses the real adapter, fixed model, and seeded Go persona version
+1. Scheduling and other agents/triggers are disabled; one 132,096-token grant
+prevents a second admission even after known usage settles downward. There is no
+retry or replenishment. The grant is not a hard dollar cap; check current Together
+pricing before approval. Ambient provider keys are ignored; the entered key goes
+only to the worker. Owned services and the disposable database are removed after
+the check; failures retain safe diagnostics at the printed path. Revoke a dedicated
+key afterward. This exploratory check does not complete formal MVP acceptance.
+Together HTTP failures also display their status, request ID and bounded/redacted
+JSON error message directly on the private terminal, never in retained logs or API
+responses. HTTP 200 responses rejected by the adapter show the exact rejection
+stage and bounded usage-field names/types, numeric token counts, model name,
+finish reason and reasoning-presence/length metadata, never generated/reasoning
+text. Do not record or share that terminal output without reviewing it for
+sensitive provider-quoted text. Ordinary worker execution keeps diagnostics off;
+manual development execution can opt in with `worker execute --provider-diagnostics`.
+
 ## Package layout
 
 ```text

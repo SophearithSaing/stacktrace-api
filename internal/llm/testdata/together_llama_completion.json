@@ -1,0 +1,26 @@
+{
+  "id": "p41oZxt-4YNCb4-a45cc0144c642ca3",
+  "object": "chat.completion",
+  "created": 1791206705,
+  "model": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+  "prompt": [],
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "seed": 9340208977779132000,
+      "index": 0,
+      "logprobs": null,
+      "message": {
+        "role": "assistant",
+        "content": "OK",
+        "tool_calls": []
+      }
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 40,
+    "completion_tokens": 2,
+    "total_tokens": 42,
+    "cached_tokens": 0
+  }
+}

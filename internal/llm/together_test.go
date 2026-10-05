@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -24,11 +25,11 @@ func (f togetherRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) { 
 
 const togetherTestKey = "test-only-secret-credential"
 const togetherTestContent = `{"decision":"publish","body":"Small transactions keep database locks short."}`
-const togetherTestUsage = `{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120}`
+const togetherTestUsage = `{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"cached_tokens":0}`
 
 func togetherCompletion(content string) string {
 	encoded, _ := json.Marshal(content)
-	return `{"id":"completion-1","object":"chat.completion","model":"` + Model + `","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":` + string(encoded) + `}}],"usage":` + togetherTestUsage + `}`
+	return `{"id":"completion-1","object":"chat.completion","model":"` + Model + `","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","tool_calls":[],"content":` + string(encoded) + `}}],"usage":` + togetherTestUsage + `}`
 }
 
 func togetherFake(t *testing.T, transport togetherRoundTrip) *Together {
@@ -86,7 +87,7 @@ func TestTogetherRequest(t *testing.T) {
 			"model": Model, "n": float64(1), "max_tokens": float64(1024), "stream": false,
 			"context_length_exceeded_behavior": "error",
 			"messages":                         []any{map[string]any{"role": "system", "content": prompt.System()}, map[string]any{"role": "user", "content": prompt.User()}},
-			"response_format":                  map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": "generation_result", "schema": schema, "strict": true}},
+			"response_format":                  map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": "generation_result", "schema": schema}},
 		}
 		var got map[string]any
 		if json.Unmarshal(data, &got) != nil || !reflect.DeepEqual(got, want) {
@@ -124,6 +125,34 @@ func TestTogetherLocalRejection(t *testing.T) {
 	checkTogetherOutcome(t, client.Generate(ctx, generationRequest(t, "Discuss Go.")), app.GenerationCancelled, false)
 }
 
+func TestTogetherObservedLlamaResponse(t *testing.T) {
+	// Captured from an explicitly approved synthetic HTTP probe, not a key,
+	// private prompt or ordinary-test network call. Preserve the actual envelope.
+	data, err := os.ReadFile("testdata/together_llama_completion.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, _ := json.Marshal(togetherTestContent)
+	for _, generationJSON := range []bool{false, true} {
+		t.Run(fmt.Sprint(generationJSON), func(t *testing.T) {
+			body := string(data)
+			want := app.GenerationInvalidOutput
+			if generationJSON {
+				body = strings.Replace(body, `"content": "OK"`, `"content": `+string(content), 1)
+				want = ""
+			}
+			client := togetherFake(t, func(*http.Request) (*http.Response, error) {
+				return togetherResponse(200, body), nil
+			})
+			outcome := client.Generate(context.Background(), generationRequest(t, "Discuss Go."))
+			checkTogetherOutcome(t, outcome, want, true)
+			if *outcome.InputTokens != 40 || *outcome.OutputTokens != 2 || outcome.ProviderRequestID != "p41oZxt-4YNCb4-a45cc0144c642ca3" {
+				t.Fatal("observed empty tools/cache metadata lost known usage or request ID")
+			}
+		})
+	}
+}
+
 func TestTogetherCompletionValidation(t *testing.T) {
 	valid := togetherCompletion(togetherTestContent)
 	for name, test := range map[string]struct {
@@ -139,12 +168,16 @@ func TestTogetherCompletionValidation(t *testing.T) {
 		"truncated":          {strings.Replace(valid, `"stop"`, `"length"`, 1), app.GenerationInvalidOutput, true},
 		"tools finish":       {strings.Replace(valid, `"stop"`, `"tool_calls"`, 1), app.GenerationInvalidOutput, true},
 		"function finish":    {strings.Replace(valid, `"stop"`, `"function_call"`, 1), app.GenerationInvalidOutput, true},
-		"tool calls":         {strings.Replace(valid, `"role":"assistant"`, `"role":"assistant","tool_calls":[{"function":{"name":"secret"}}]`, 1), app.GenerationInvalidOutput, true},
-		"empty tools":        {strings.Replace(valid, `"role":"assistant"`, `"role":"assistant","tool_calls":[]`, 1), app.GenerationInvalidOutput, true},
+		"tool calls":         {strings.Replace(valid, `"tool_calls":[]`, `"tool_calls":[{"function":{"name":"secret"}}]`, 1), app.GenerationInvalidOutput, true},
+		"empty tools":        {valid, "", true},
+		"absent tools":       {strings.Replace(valid, `"tool_calls":[],`, "", 1), "", true},
+		"non-list tools":     {strings.Replace(valid, `"tool_calls":[]`, `"tool_calls":{}`, 1), app.GenerationInvalidOutput, true},
+		"string tools":       {strings.Replace(valid, `"tool_calls":[]`, `"tool_calls":""`, 1), app.GenerationInvalidOutput, true},
+		"null tool entry":    {strings.Replace(valid, `"tool_calls":[]`, `"tool_calls":[null]`, 1), app.GenerationInvalidOutput, true},
 		"function call":      {strings.Replace(valid, `"role":"assistant"`, `"role":"assistant","function_call":{}`, 1), app.GenerationInvalidOutput, true},
 		"reasoning":          {strings.Replace(valid, `"role":"assistant"`, `"role":"assistant","reasoning":"secret"`, 1), app.GenerationAccountingUnsupported, false},
 		"reasoning content":  {strings.Replace(valid, `"role":"assistant"`, `"role":"assistant","reasoning_content":""`, 1), app.GenerationAccountingUnsupported, false},
-		"null metadata":      {strings.Replace(valid, `"role":"assistant"`, `"role":"assistant","reasoning":null,"tool_calls":null`, 1), "", true},
+		"null metadata":      {strings.Replace(strings.Replace(valid, `"role":"assistant"`, `"role":"assistant","reasoning":null`, 1), `"tool_calls":[]`, `"tool_calls":null`, 1), "", true},
 		"wrong role":         {strings.Replace(valid, `"assistant"`, `"user"`, 1), app.GenerationInvalidOutput, true},
 		"wrong model":        {strings.Replace(valid, Model, "another-model", 1), app.GenerationAccountingUnsupported, false},
 		"missing model":      {strings.Replace(valid, `"model":"`+Model+`",`, "", 1), app.GenerationAccountingUnsupported, false},
@@ -195,6 +228,9 @@ func TestTogetherUsage(t *testing.T) {
 		known   bool
 	}{
 		"known":              {togetherTestUsage, "", true},
+		"legacy counters":    {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120}`, "", true},
+		"cached prompt":      {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"cached_tokens":80}`, "", true},
+		"invalid cache":      {`{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"cached_tokens":101}`, app.GenerationAccountingUnsupported, false},
 		"absent":             {"", "", false},
 		"null":               {`null`, "", false},
 		"missing counts":     {`{}`, "", false},

@@ -9,10 +9,24 @@ source "$root/scripts/common.sh"
 for tool in flock timeout; do need "$tool"; done
 
 command=${1:-}
-disposable=0 db_started=0 api_started=0 backend='' owner=''
+disposable=0 db_started=0 api_started=0 backend='' owner='' response_ready=0
+if [[ $command == live-response ]]; then
+    # No noninteractive approval, inherited key, or shell tracing on the paid path.
+    set +x
+    unset TOGETHER_API_KEY
+    [[ -t 0 && -t 1 ]] || fail 'live-response requires an interactive terminal; no provider call made.'
+    echo 'One isolated local @golang response using Together meta-llama/Llama-3.3-70B-Instruct-Turbo.'
+    echo 'Review seed/personas.json (Go version 1) and current Together model/pricing before proceeding.'
+    echo 'https://docs.together.ai/docs/serverless-models  https://www.together.ai/pricing'
+    echo 'One 132,096-token budget grant; no replenishment or second execution. Not a hard dollar/billing cap.'
+    echo 'Synthetic question: @golang How would you keep a Go worker loop bounded and shut it down gracefully?'
+    echo 'The disposable database is removed afterward; safe failure diagnostics are retained. Not MVP acceptance.'
+    read -r -p 'Type LIVE to approve this paid test, or anything else to cancel: ' approval
+    [[ $approval == LIVE ]] || fail 'Cancelled; no provider call made.'
+fi
 case "$command" in
     dev-up|dev-down|dev-status) state="$root/.dev/dev" ;;
-    test|check|smoke)
+    test|check|smoke|live-response|response-check)
         mkdir -p "$root/.dev/runs"
         state=$(mktemp -d "$root/.dev/runs/$command.XXXXXXXX")
         disposable=1
@@ -22,7 +36,7 @@ case "$command" in
         [[ $state == "$root/.dev/runs/"* && $(dirname "$state") == "$root/.dev/runs" ]] || fail 'Expected a direct child of .dev/runs.'
         disposable=1
         ;;
-    *) fail 'Usage: bash scripts/dev.sh {dev-up|dev-down|dev-status|test|check|smoke|clean-run DIR}' ;;
+    *) fail 'Usage: bash scripts/dev.sh {dev-up|dev-down|dev-status|test|check|smoke|live-response|response-check|clean-run DIR}' ;;
 esac
 mkdir -p "$state"
 exec 9>"$state/lock"
@@ -32,10 +46,22 @@ cleanup() {
     local result=$? cleanup_failed=0
     trap - EXIT INT TERM
     set +e
+    unset TOGETHER_API_KEY together_key
+    # Revoke publication authority before interrupting an in-flight paid call.
+    if [[ $response_ready == 1 ]]; then
+        timeout 35 "$state/admin" agent pause --all >>"$state/pause.log" 2>&1 || cleanup_failed=1
+    fi
     if [[ $command != dev-status ]]; then stop_process job || cleanup_failed=1; fi
+    if [[ $response_ready == 1 && $cleanup_failed == 0 && -f $state/response-fixture.json && ! -f $state/response-report.json ]]; then
+        # Join the worker before snapshotting ambiguous accounting and removing data.
+        timeout 80 python3 -E -B scripts/immediate_response.py "$state" report >"$state/cleanup-report.log" 2>&1 || cleanup_failed=1
+    fi
     if [[ $disposable == 1 ]]; then
         stop_process api || cleanup_failed=1
-        if [[ -n $backend ]]; then remove_database || cleanup_failed=1; fi
+        if [[ -n $backend ]]; then
+            # Failed response cleanup must retain its database for recovery.
+            if [[ $response_ready == 0 || $cleanup_failed == 0 ]]; then remove_database || cleanup_failed=1; fi
+        fi
     elif [[ $result != 0 ]]; then
         if [[ $api_started == 1 ]]; then stop_process api || cleanup_failed=1; fi
         if [[ $db_started == 1 ]]; then stop_database || cleanup_failed=1; fi
@@ -47,7 +73,7 @@ cleanup() {
         echo "Command failed (status $result). Diagnostics: $state" >&2
         if [[ $disposable == 1 && $cleanup_failed == 0 ]]; then
             rm -f "$state/password" "$state/csrf-key" "$state/cursor-key" "$state/server" "$state/server.next" "$state/db" "$state/worker" \
-                "$state/worker.test" "$state/admin" "$state/execution-command.json" "$state/execution-fixture.json" "$state/generation-fixture.json"
+                 "$state/worker.test" "$state/admin" "$state/execution-command.json" "$state/execution-fixture.json" "$state/generation-fixture.json" "$state/response-policy.json"
         fi
     fi
     exit "$result"
@@ -90,7 +116,7 @@ init_settings
 unset TOGETHER_API_KEY STACKTRACE_GENERATION_SMOKE
 stop_process job
 echo "Runtime artifacts: $state"
-if [[ $command == dev-up || $command == smoke ]]; then
+if [[ $command == dev-up || $command == smoke || $command == live-response || $command == response-check ]]; then
     # Build before touching an existing development API.
     run go build -o "$state/server.next" ./cmd/server
     run go build -o "$state/db" ./cmd/db
@@ -101,9 +127,46 @@ if [[ $command == smoke ]]; then
     run go build -o "$state/admin" ./cmd/admin
     export STACKTRACE_ADMIN="$state/admin"
 fi
+if [[ $command == live-response || $command == response-check ]]; then
+    run go build -o "$state/worker" ./cmd/worker
+    run go build -o "$state/admin" ./cmd/admin
+    if [[ $command == response-check ]]; then run go test -c -o "$state/worker.test" ./cmd/worker; fi
+fi
 start_database
 
 case "$command" in
+    live-response|response-check)
+        run "$state/db" migrate
+        run "$state/db" seed
+        response_ready=1
+        run "$state/worker" check
+        mv "$state/server.next" "$state/server"
+        unset DEV_CLIENT_ORIGINS
+        start_api 1 0
+        run python3 -E -B scripts/immediate_response.py "$state" setup
+        worker_result=0 verification_result=0
+        if [[ $command == live-response ]]; then
+            IFS= read -rsp 'Together API key (hidden; worker only): ' together_key
+            echo
+            [[ -n $together_key ]] || fail 'Empty key; no provider call made.'
+            # Recheck freshness after the operator prompt, without delivering the key.
+            run python3 -E -B scripts/immediate_response.py "$state" preflight
+            : >"$state/job.log"
+            # Open the private terminal before setsid detaches the owned worker.
+            # Descriptor 3 bypasses job.log/commands.log; no provider body is saved.
+            TOGETHER_API_KEY="$together_key" start_process job timeout --signal=TERM --kill-after=15s 90 "$state/worker" execute --provider-diagnostics 3>/dev/tty
+            unset together_key
+            read -r worker_pid _ <"$state/job.pid"
+            wait "$worker_pid" || worker_result=$?
+            rm -f "$state/job.pid"
+            cat "$state/job.log"
+            cat "$state/job.log" >>"$state/commands.log"
+        else
+            STACKTRACE_GENERATION_SMOKE="$state/execution-command.json" run "$state/worker.test" -test.run='^TestGenerationSmokeHarness$' -test.count=1 -test.timeout=90s || worker_result=$?
+        fi
+        run python3 -E -B scripts/immediate_response.py "$state" verify || verification_result=$?
+        [[ $worker_result == 0 && $verification_result == 0 ]] || fail 'Immediate response incomplete; no retry or new grant was made.'
+        ;;
     dev-up|smoke)
         if [[ $command == smoke ]]; then
             # SQL fixtures are disposable-smoke-only, not an operator enable command.

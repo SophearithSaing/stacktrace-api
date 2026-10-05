@@ -89,6 +89,7 @@ func (p *smokeProvider) Generate(_ context.Context, request app.GenerationReques
 		app.TriggerReply:     "A focused regression test documents the comment contract.",
 		app.TriggerRepost:    "Durable transactions preserve this shared example.",
 		app.TriggerQuote:     "Bounded context makes quoted discussions easier to follow.",
+		app.TriggerHumanPost: "Use a context to bound the worker loop and join it during shutdown.",
 	}[request.Job.TriggerKind]
 	if body == "" {
 		p.t.Fatal("unexpected smoke trigger")

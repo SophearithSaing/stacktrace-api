@@ -66,6 +66,41 @@ jobs:
             .dev/runs/*/api.log
             .dev/runs/*/serve-*.log
 
+  runner:
+    name: Runner lifecycle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Prepare disposable PostgreSQL
+        run: |
+          timeout 20 docker info
+          timeout 180 docker pull postgres:18
+      - name: Check lifecycle, failures and concurrent isolation
+        run: python3 -B scripts/test_runner.py
+      - name: Preserve failure logs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runner-failure-logs
+          retention-days: 7
+          if-no-files-found: ignore
+          include-hidden-files: true
+          # Only allowlisted logs, never the private checkout or runtime state.
+          path: |
+            .dev/runner-checks/checkout.*/interrupt*.log
+            .dev/runner-checks/checkout.*/.dev/runs/*/commands.log
+            .dev/runner-checks/checkout.*/.dev/runs/*/job.log
+            .dev/runner-checks/checkout.*/.dev/runs/*/postgres.log
+            .dev/runner-checks/checkout.*/.dev/runs/*/api.log
+            .dev/runner-checks/checkout.*/.dev/runs/*/serve-*.log
+
   contracts:
     name: Contracts
     runs-on: ubuntu-24.04

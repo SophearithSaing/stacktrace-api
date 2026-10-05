@@ -86,7 +86,7 @@ func TestTogetherRequest(t *testing.T) {
 			"model": Model, "n": float64(1), "max_tokens": float64(1024), "stream": false,
 			"context_length_exceeded_behavior": "error",
 			"messages":                         []any{map[string]any{"role": "system", "content": prompt.System()}, map[string]any{"role": "user", "content": prompt.User()}},
-			"response_format":                  map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": "generation_result", "schema": schema, "strict": true}},
+			"response_format":                  map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": "generation_result", "schema": schema}},
 		}
 		var got map[string]any
 		if json.Unmarshal(data, &got) != nil || !reflect.DeepEqual(got, want) {

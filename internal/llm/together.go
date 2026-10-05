@@ -75,7 +75,6 @@ type togetherResponseFormat struct {
 type togetherJSONSchema struct {
 	Name   string          `json:"name"`
 	Schema json.RawMessage `json:"schema"`
-	Strict bool            `json:"strict"`
 }
 
 // togetherRequestBody encodes a validated prompt as a Together request body.
@@ -92,7 +91,7 @@ func togetherRequestBody(prompt Prompt) ([]byte, error) {
 		Model: Model, Messages: []togetherMessage{{"system", prompt.System()}, {"user", prompt.User()}},
 		N: 1, MaxTokens: MaxOutputTokens, Stream: false, ContextLengthExceededBehavior: "error",
 		ResponseFormat: togetherResponseFormat{Type: "json_schema", JSONSchema: togetherJSONSchema{
-			Name: "generation_result", Schema: json.RawMessage(prompt.Schema()), Strict: true}},
+			Name: "generation_result", Schema: json.RawMessage(prompt.Schema())}},
 	})
 }
 

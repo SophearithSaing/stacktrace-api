@@ -62,6 +62,7 @@ sequenceDiagram
             else Reservation committed
                 Store-->>Exec: Generation attempt
                 Note over Exec,LLM: Provider call occurs outside database transactions
+                Note over Exec,LLM: Provider schema uses a root object and exact publish/skip variants are validated locally
                 par Provider request
                     Exec->>LLM: POST chat completion with 45-second deadline
                     LLM-->>Exec: Validated result or classified failure

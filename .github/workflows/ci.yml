@@ -65,3 +65,34 @@ jobs:
             .dev/runs/*/postgres.log
             .dev/runs/*/api.log
             .dev/runs/*/serve-*.log
+
+  contracts:
+    name: Contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tools/openapi/requirements.lock
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: tools/diagrams/package-lock.json
+      - name: Install locked contract tooling
+        run: |
+          make openapi-setup
+          make diagrams-setup
+      - name: Test and validate OpenAPI
+        run: |
+          tools/openapi/.venv/bin/python -B -m unittest discover -s tools/openapi
+          make openapi-check
+      - name: Test and validate diagrams
+        run: |
+          npm --prefix tools/diagrams test
+          make diagrams-check

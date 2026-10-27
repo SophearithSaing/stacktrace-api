@@ -78,6 +78,71 @@ func TestLoadProductionDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadPlatformPort(t *testing.T) {
+	for _, role := range []Role{Server, WorkerServe} {
+		t.Run(string(role), func(t *testing.T) {
+			env := serverEnvironment()
+			env["PORT"] = "9090"
+			env["TOGETHER_API_KEY"] = "unused-test-key"
+			getenv := func(key string) string { return env[key] }
+			cfg, err := load(role, getenv)
+			if err != nil || cfg.HTTPAddr != ":9090" {
+				t.Fatalf("platform listener: address=%q err=%v", cfg.HTTPAddr, err)
+			}
+			name := "HTTP_ADDR"
+			if role == WorkerServe {
+				name = "WORKER_HTTP_ADDR"
+			}
+			env[name] = "127.0.0.1:8181"
+			env["PORT"] = "invalid-ignored-platform-port"
+			cfg, err = load(role, getenv)
+			if err != nil || cfg.HTTPAddr != env[name] {
+				t.Fatalf("explicit listener: address=%q err=%v", cfg.HTTPAddr, err)
+			}
+			env[name] = "invalid-address"
+			if _, err := load(role, getenv); err == nil {
+				t.Fatal("platform port hid an invalid explicit listener")
+			}
+		})
+	}
+}
+
+func TestLoadRejectsInvalidPlatformPort(t *testing.T) {
+	for _, role := range []Role{Server, WorkerServe} {
+		for _, port := range []string{"0", "-1", "+8080", "65536", "8080 ", "host:8080", "private-secret", strings.Repeat("9", 100)} {
+			env := serverEnvironment()
+			env["PORT"] = port
+			env["TOGETHER_API_KEY"] = "unused-test-key"
+			_, err := load(role, func(key string) string { return env[key] })
+			if err == nil || err.Error() != "PORT must be a number from 1 to 65535" {
+				t.Fatalf("role=%s accepted port or disclosed its value: %v", role, err)
+			}
+		}
+	}
+}
+
+func TestLoadNonHTTPRolesIgnorePlatformPort(t *testing.T) {
+	env := serverEnvironment()
+	env["PORT"] = "invalid-ignored-platform-port"
+	env["TOGETHER_API_KEY"] = "unused-test-key"
+	for _, role := range []Role{Database, WorkerExecute} {
+		cfg, err := load(role, func(key string) string { return env[key] })
+		if err != nil || cfg.HTTPAddr != "" {
+			t.Fatalf("role=%s loaded listener settings: %v", role, err)
+		}
+	}
+}
+
+func TestLoadCloudSQLSocketURL(t *testing.T) {
+	env := serverEnvironment()
+	// pgx selects the socket directory through the query parameter; the URL
+	// hostname remains present for the existing configuration contract.
+	env["DATABASE_URL"] = "postgres://stacktrace:synthetic-password@localhost/stacktrace?host=%2Fcloudsql%2Fproject%3Aregion%3Ainstance&sslmode=disable"
+	if _, err := load(Database, func(key string) string { return env[key] }); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLoadRejectsInvalidSettings(t *testing.T) {
 	tests := []struct{ key, value string }{
 		{"APP_ENV", "staging"},

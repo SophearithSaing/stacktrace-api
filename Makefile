@@ -1,4 +1,4 @@
-.PHONY: dev-up dev-down dev-status test check smoke live-response response-check diagrams-setup diagrams-check openapi-setup openapi-check
+.PHONY: dev-up dev-down dev-status test check smoke live-response response-check container-check diagrams-setup diagrams-check openapi-setup openapi-check
 
 # Export rather than interpolating into a shell command. The runner splits this
 # as whitespace-separated Go test arguments, without evaluating shell syntax.
@@ -6,6 +6,9 @@ export TEST_ARGS
 
 dev-up dev-down dev-status test check smoke live-response response-check:
 	@bash scripts/dev.sh $@
+
+container-check:
+	@python3 -B scripts/check_container.py
 
 diagrams-setup:
 	@npm --prefix tools/diagrams ci --ignore-scripts --no-audit --no-fund

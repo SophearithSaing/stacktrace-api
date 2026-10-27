@@ -7,9 +7,6 @@ metadata:
     cloud.googleapis.com/location: REGION
 spec:
   template:
-    metadata:
-      annotations:
-        run.googleapis.com/cloudsql-instances: PROJECT_ID:REGION:SQL_INSTANCE
     spec:
       parallelism: 1
       taskCount: 1
@@ -25,6 +22,7 @@ spec:
               env:
                 - name: APP_ENV
                   value: production
+                # Neon direct (unpooled) connection URL with TLS.
                 - name: DATABASE_URL
                   valueFrom:
                     secretKeyRef:

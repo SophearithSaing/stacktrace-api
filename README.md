@@ -205,13 +205,16 @@ SIGTERM shutdown using disposable Docker resources. It blocks worker internet
 egress and never seeds or calls Together. Failures retain logs at the printed path.
 
 Cloud Run examples: [`deploy/cloudrun/`](deploy/cloudrun/). Replace project,
-region, domain, SQL instance, image digest, and secret-version placeholders in
+region, domain, image digest, and secret-version placeholders in
 private copies before use. API and worker are separate services; the worker needs
 always-allocated CPU and at least one instance. Migration/admin jobs are explicit,
 single-task and non-retried; admin defaults to read-only `status`. No deployment
 automation or cloud provisioning is included yet.
 
-Use same-site HTTPS frontend/API domains and role-scoped Secret Manager values.
+Use your existing Neon PostgreSQL database: pooled TLS URLs for API/worker and
+direct TLS URLs for migration/admin jobs, supplied through Secret Manager.
+No Cloud SQL instance or connection integration is required. Use same-site HTTPS
+frontend/API domains.
 The current exact-schema readiness policy requires a maintenance window for
 schema-changing releases; old images are not automatically compatible with new
 migrations. Proxy-aware rate limiting, final IAM/networking, operational alerts,

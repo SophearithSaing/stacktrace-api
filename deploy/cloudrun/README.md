@@ -6,32 +6,47 @@ migrations and administration use explicitly executed jobs.
 
 ## Prepare
 
-1. Provision Artifact Registry, Cloud SQL PostgreSQL, four service accounts and
-   Secret Manager values in the selected project/region.
+1. Use your existing Neon PostgreSQL database. Set up Artifact Registry and
+   Secret Manager values in the selected Google Cloud project/region; no Cloud SQL
+   instance, socket, proxy or Cloud SQL Client IAM role is needed.
 2. Build and push the root `Dockerfile` for `linux/amd64`. Use the same immutable
    image digest for all four templates.
 3. Copy the YAML files outside the checkout. Replace `PROJECT_NUMBER`, `PROJECT_ID`,
-   `REGION`, `SQL_INSTANCE`, `REPOSITORY`, `IMAGE_DIGEST`, `DOMAIN`, and each
+   `REGION`, `REPOSITORY`, `IMAGE_DIGEST`, `DOMAIN`, and each
    `SECRET_VERSION` with the actual values. Secret versions must be numeric, not
    `latest`; values belong in Secret Manager, never the templates.
-4. Restrict each identity to its own secrets and grant Cloud SQL Client access.
-   Use different database users: runtime users need appropriate data access, not
-   schema ownership; only the migration user owns/applies the schema. Restrict
-   job execution/argument overrides to trusted release operators. Do not grant
-   public invocation to the worker or jobs.
+4. Set `serviceAccountName` to the Cloud Run identity you will use and grant it
+   access to the referenced secrets. The examples show separate identities, but
+   creating four custom accounts is not required; an existing service account can
+   be used. Restrict job execution/argument overrides to trusted release operators.
+   Do not grant public invocation to the worker or jobs.
 
-The Cloud SQL integration mounts `/cloudsql/PROJECT_ID:REGION:SQL_INSTANCE`.
-Each database URL secret uses the appropriate user/password and database. Shape:
+## Neon connections
+
+Copy the connection strings from Neon's connection dialog into Secret Manager,
+not the YAML or repository. All four secrets must target the same Neon branch
+and database. Use a Neon role with the appropriate privileges for each command;
+separate restricted runtime roles are optional hardening, not a connection
+requirement. Keep migration credentials able to create/alter the schema.
+
+| Template | Database URL secret | Neon endpoint |
+| --- | --- | --- |
+| API | `stacktrace-api-database-url` | Pooled |
+| Worker | `stacktrace-worker-database-url` | Pooled |
+| Migrate | `stacktrace-migrate-database-url` | Direct (unpooled) |
+| Admin | `stacktrace-admin-database-url` | Direct (unpooled) |
+
+Example shapes only; replace the entire URL with the one from Neon:
 
 ```text
-postgres://USER:ENCODED_PASSWORD@localhost/DATABASE?host=%2Fcloudsql%2FPROJECT_ID%3AREGION%3ASQL_INSTANCE&sslmode=disable
+postgresql://USER:ENCODED_PASSWORD@NEON_POOLED_HOST/DATABASE?sslmode=require
+postgresql://USER:ENCODED_PASSWORD@NEON_DIRECT_HOST/DATABASE?sslmode=require
 ```
 
-Percent-encode credentials and the socket path. `sslmode=disable` here is only
-for the local Unix socket: the managed Cloud SQL proxy encrypts the remote
-connection. It is not a recommendation for unprotected remote TCP connections.
-The hostname remains present for application URL validation; pgx uses the socket
-specified in the query parameter.
+Keep TLS enabled and retain the Neon-provided connection security options. Do not
+use `sslmode=disable` or a local socket URL. If assembling a URL yourself,
+percent-encode credentials. Cloud Run connects over outbound PostgreSQL/TLS;
+the existing pgx adapter reads `DATABASE_URL` with no application code change.
 
 ## Release order
 
@@ -51,7 +66,8 @@ Cloud Run supplies `PORT`; do not add conflicting listener overrides. Worker CPU
 must remain always allocated with minimum one instance. The maximum of one is
 not a singleton guarantee during deployments/replacement; database leases and
 reservations still govern authority. Check combined connection use (ten per
-process, including overlapping revisions and jobs) against Cloud SQL capacity.
+process, including overlapping revisions and jobs) against your Neon plan's
+connection limits.
 Use `/readyz` for operational readiness monitoring, not worker restart policy:
 provider degradation is deliberately separate from liveness.
 

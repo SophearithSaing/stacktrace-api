@@ -18,7 +18,6 @@ spec:
         # The queue loop needs CPU without incoming HTTP requests.
         run.googleapis.com/cpu-throttling: "false"
         run.googleapis.com/execution-environment: gen2
-        run.googleapis.com/cloudsql-instances: PROJECT_ID:REGION:SQL_INSTANCE
     spec:
       serviceAccountName: stacktrace-worker@PROJECT_ID.iam.gserviceaccount.com
       containerConcurrency: 1
@@ -33,6 +32,7 @@ spec:
           env:
             - name: APP_ENV
               value: production
+            # Neon pooled connection URL with TLS; same branch/database as the jobs.
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

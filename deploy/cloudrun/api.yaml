@@ -19,7 +19,6 @@ spec:
         autoscaling.knative.dev/maxScale: "3"
         run.googleapis.com/cpu-throttling: "true"
         run.googleapis.com/execution-environment: gen2
-        run.googleapis.com/cloudsql-instances: PROJECT_ID:REGION:SQL_INSTANCE
     spec:
       serviceAccountName: stacktrace-api@PROJECT_ID.iam.gserviceaccount.com
       containerConcurrency: 8
@@ -37,6 +36,7 @@ spec:
               value: https://api.DOMAIN
             - name: CLIENT_ORIGINS
               value: https://app.DOMAIN
+            # Neon pooled connection URL with TLS; same branch/database as the jobs.
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

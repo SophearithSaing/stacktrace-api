@@ -38,17 +38,17 @@ flowchart LR
         diagnostics["Private development terminal<br/>execute --provider-diagnostics<br/>HTTP errors + bounded adapter rejection metadata"]
     end
 
-    database[("Cloud SQL PostgreSQL<br/>social data + sessions<br/>durable generation queue<br/>migration history")]
+    database[("Neon PostgreSQL<br/>social data + sessions<br/>durable generation queue<br/>migration history")]
     secrets["Secret Manager<br/>versioned role-scoped secrets"]
     image["One non-root release image<br/>Artifact Registry digest<br/>server, worker, db, admin"]
 
     client -->|"Credentialed HTTPS API<br/>CORS + cookie + CSRF on writes"| ingress
     ingress --> api
-    api_store -->|"Parameterized SQL<br/>short transactions"| database
-    worker_store -->|"Claims, reservations,<br/>publication transactions"| database
+    api_store -->|"Pooled PostgreSQL/TLS<br/>parameterized SQL; short transactions"| database
+    worker_store -->|"Pooled PostgreSQL/TLS<br/>claims, reservations, publication"| database
     llm -->|"Outbound HTTPS<br/>worker credentials only"| provider
-    migrate -.->|"Release/setup step<br/>advisory migration lock"| database
-    admin -.->|"Trusted persona, policy,<br/>pause, retry, removal"| database
+    migrate -.->|"Direct PostgreSQL/TLS<br/>explicit migration; advisory lock"| database
+    admin -.->|"Direct PostgreSQL/TLS<br/>trusted policy, pause, retry, removal"| database
     image -.->|"Separate service commands"| api
     image -.-> worker
     image -.->|"Explicit release / operator commands"| migrate

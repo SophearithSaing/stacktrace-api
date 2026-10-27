@@ -34,14 +34,25 @@ class CloudRunTemplatesTests(unittest.TestCase):
                 self.assertEqual(container["command"], command)
                 images.add(container["image"])
                 identities.add(spec["serviceAccountName"])
-                annotations = document["spec"]["template"]["metadata"]["annotations"]
-                self.assertEqual(annotations["run.googleapis.com/cloudsql-instances"], "PROJECT_ID:REGION:SQL_INSTANCE")
                 env = {item["name"]: item for item in container["env"]}
                 self.assertEqual(env["APP_ENV"]["value"], "production")
                 databases.add(env["DATABASE_URL"]["valueFrom"]["secretKeyRef"]["name"])
         self.assertEqual(images, {"REGION-docker.pkg.dev/PROJECT_ID/REPOSITORY/stacktrace@sha256:IMAGE_DIGEST"})
         self.assertEqual(len(identities), 4)
         self.assertEqual(len(databases), 4)
+
+    def test_external_postgres_does_not_require_cloud_sql(self):
+        for name in ("api", "worker", "migrate", "admin"):
+            with self.subTest(name=name):
+                document = template(name)
+                for metadata in (document["metadata"], document["spec"]["template"].get("metadata", {})):
+                    self.assertNotIn("run.googleapis.com/cloudsql-instances", metadata.get("annotations", {}))
+                spec = revision(document)
+                for volume in spec.get("volumes", []):
+                    self.assertNotIn("cloudSqlInstance", volume)
+                container = spec["containers"][0]
+                for mount in container.get("volumeMounts", []):
+                    self.assertFalse(mount["mountPath"].startswith("/cloudsql"))
 
     def test_credentials_are_versioned_role_scoped_secret_references(self):
         expected = {

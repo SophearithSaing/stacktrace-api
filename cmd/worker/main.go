@@ -98,7 +98,13 @@ func run(ctx context.Context, args []string, output io.Writer) error {
 		return execute(ctx, store, provider, output)
 	}
 	if role == config.WorkerServe {
-		return serve(ctx, store, provider, cfg.HTTPAddr, output)
+		err := serve(ctx, store, provider, cfg.HTTPAddr, output)
+		// A joined, safely settled service stop is a clean process shutdown.
+		// Do not hide storage/configuration failures that coincide with SIGTERM.
+		if errors.Is(ctx.Err(), context.Canceled) && errors.Is(err, worker.ExecutionStopped) {
+			return nil
+		}
+		return err
 	}
 	if args[0] == "schedule" {
 		result, err := schedule(ctx, store)

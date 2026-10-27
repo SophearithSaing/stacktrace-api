@@ -17,11 +17,13 @@ import (
 )
 
 const (
-	serveCycleInterval       = 5 * time.Second
-	serveFailureBackoff      = 30 * time.Second
-	serveCleanupTimeout      = 5 * time.Second
-	serveProgressStaleness   = worker.ExecutionTimeout + 35*time.Second + serveCycleInterval + serveCleanupTimeout + 5*time.Second
-	serveHTTPShutdownTimeout = 10 * time.Second
+	serveCycleInterval     = 5 * time.Second
+	serveFailureBackoff    = 30 * time.Second
+	serveCleanupTimeout    = 5 * time.Second
+	serveProgressStaleness = worker.ExecutionTimeout + 35*time.Second + serveCycleInterval + serveCleanupTimeout + 5*time.Second
+	// Health probes must not consume Cloud Run's ten-second termination window.
+	// Executor settlement runs concurrently with its own five-second budget.
+	serveHTTPShutdownTimeout = 2 * time.Second
 	serveStatusLogInterval   = time.Minute
 	serveReadyDBTimeout      = 5 * time.Second
 

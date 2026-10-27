@@ -1,11 +1,11 @@
 flowchart LR
     client["Separate frontend origin<br/>for example app.example.com"]
-    ingress["TLS proxy / platform ingress<br/>for example api.example.com"]
+    ingress["TLS proxy / Cloud Run ingress<br/>for example api.example.com"]
     provider["Together AI REST API"]
 
-    subgraph backend["Stacktrace backend deployment"]
-        api["API process<br/>cmd/server<br/>API /healthz + DB/schema /readyz"]
-        worker["Worker process<br/>cmd/worker serve<br/>loop /healthz + cycle/DB /readyz"]
+    subgraph backend["Cloud Run target deployment — templates; not provisioned"]
+        api["Cloud Run API service<br/>cmd/server; request-based CPU<br/>API /healthz + DB/schema /readyz"]
+        worker["Private Cloud Run worker service<br/>cmd/worker serve; always-allocated CPU<br/>minimum 1; loop /healthz + cycle/DB /readyz"]
 
         subgraph api_layers["API process boundaries"]
             middleware["Middleware<br/>CORS, sessions, CSRF,<br/>limits, logging, recovery"]
@@ -33,12 +33,14 @@ flowchart LR
     end
 
     subgraph operations["Explicit trusted operations"]
-        migrate["Database command<br/>cmd/db migrate / seed"]
-        admin["Operator command<br/>cmd/admin"]
+        migrate["Explicit migration Job<br/>cmd/db migrate; never startup seeding"]
+        admin["Restricted operator Job<br/>cmd/admin; status by default"]
         diagnostics["Private development terminal<br/>execute --provider-diagnostics<br/>HTTP errors + bounded adapter rejection metadata"]
     end
 
-    database[("PostgreSQL<br/>social data + sessions<br/>durable generation queue<br/>migration history")]
+    database[("Cloud SQL PostgreSQL<br/>social data + sessions<br/>durable generation queue<br/>migration history")]
+    secrets["Secret Manager<br/>versioned role-scoped secrets"]
+    image["One non-root release image<br/>Artifact Registry digest<br/>server, worker, db, admin"]
 
     client -->|"Credentialed HTTPS API<br/>CORS + cookie + CSRF on writes"| ingress
     ingress --> api
@@ -47,11 +49,19 @@ flowchart LR
     llm -->|"Outbound HTTPS<br/>worker credentials only"| provider
     migrate -.->|"Release/setup step<br/>advisory migration lock"| database
     admin -.->|"Trusted persona, policy,<br/>pause, retry, removal"| database
+    image -.->|"Separate service commands"| api
+    image -.-> worker
+    image -.->|"Explicit release / operator commands"| migrate
+    image -.-> admin
+    secrets -.->|"DB URL + CSRF/cursor keys"| api
+    secrets -.->|"DB URL + Together key"| worker
+    secrets -.->|"Separate privileged DB URLs"| migrate
+    secrets -.-> admin
     llm -.->|"Opt-in only; no provider text<br/>in API, database, or retained logs"| diagnostics
 
     classDef external fill:#f5f5f5,stroke:#666,color:#111
     classDef process fill:#e8f1ff,stroke:#3568a8,color:#111
     classDef storage fill:#fff2cc,stroke:#a67c00,color:#111
-    class client,ingress,provider external
+    class client,ingress,provider,secrets,image external
     class api,worker,middleware,handlers,domain,api_store,scheduler,executor,llm,worker_store,migrate,admin process
     class database storage

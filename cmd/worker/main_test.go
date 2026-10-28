@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/SophearithSaing/stacktrace-api/internal/postgres"
 	"github.com/SophearithSaing/stacktrace-api/internal/worker"
@@ -69,6 +71,35 @@ func TestServeStartupErrorsAreSafe(t *testing.T) {
 	err = run(context.Background(), []string{"serve"}, &output)
 	if !errors.Is(err, worker.ExecutionConfiguration) || strings.Contains(err.Error(), "provider-key") || output.Len() != 0 {
 		t.Fatalf("invalid listener address: %v", err)
+	}
+}
+
+func TestWorkerServeCancellationIsClean(t *testing.T) {
+	_, databaseURL := workerTestStore(t)
+	addr := ephemeralAddr(t)
+	t.Setenv("DATABASE_URL", databaseURL)
+	t.Setenv("TOGETHER_API_KEY", "unused-test-key")
+	t.Setenv("WORKER_HTTP_ADDR", addr)
+	ctx, cancel := context.WithCancel(context.Background())
+	finished := make(chan error, 1)
+	joined := make(chan struct{})
+	go func() {
+		defer close(joined)
+		finished <- run(ctx, []string{"serve"}, io.Discard)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-joined
+	})
+	waitForHTTP(t, addr)
+	cancel()
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatalf("graceful service stop reported a process failure: %v", err)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("worker command did not join within the platform shutdown window")
 	}
 }
 

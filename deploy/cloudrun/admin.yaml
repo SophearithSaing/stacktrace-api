@@ -1,0 +1,35 @@
+# Read-only by default. Mutating argument overrides require operator approval.
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: stacktrace-admin
+  namespace: PROJECT_NUMBER
+  labels:
+    cloud.googleapis.com/location: REGION
+spec:
+  template:
+    spec:
+      parallelism: 1
+      taskCount: 1
+      template:
+        spec:
+          maxRetries: 0
+          timeoutSeconds: "60"
+          serviceAccountName: stacktrace-admin@PROJECT_ID.iam.gserviceaccount.com
+          containers:
+            - image: REGION-docker.pkg.dev/PROJECT_ID/REPOSITORY/stacktrace@sha256:IMAGE_DIGEST
+              command: [/app/admin]
+              args: [status]
+              env:
+                - name: APP_ENV
+                  value: production
+                # Neon direct (unpooled) connection URL with TLS.
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: stacktrace-admin-database-url
+                      key: SECRET_VERSION
+              resources:
+                limits:
+                  cpu: "1"
+                  memory: 512Mi

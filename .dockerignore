@@ -1,0 +1,21 @@
+# Allowlist only compilation inputs. Credentials, runtime data and local tooling
+# must not enter the build context, even when they are not Git-ignored.
+**
+!Dockerfile
+!go.mod
+!go.sum
+!cmd/
+!cmd/**/
+!cmd/**/*.go
+!internal/
+!internal/**/
+!internal/**/*.go
+!migrations/
+!migrations/*.go
+!migrations/*.sql
+!seed/
+!seed/embed.go
+!seed/demo.json
+!seed/personas.json
+# Tests and their provider fixtures are not release inputs.
+**/*_test.go

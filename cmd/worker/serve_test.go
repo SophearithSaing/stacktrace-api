@@ -409,7 +409,16 @@ func TestServeCancelDuringProviderCall(t *testing.T) {
 		t.Fatal("provider call never started")
 	}
 	cancel()
-	serveWg.Wait()
+	joined := make(chan struct{})
+	go func() {
+		serveWg.Wait()
+		close(joined)
+	}()
+	select {
+	case <-joined:
+	case <-time.After(8 * time.Second):
+		t.Fatal("cancelled provider did not settle and join within the platform shutdown window")
+	}
 
 	if serveErr != nil && !errors.Is(serveErr, worker.ExecutionStopped) {
 		t.Fatalf("expected stopped, got %v\noutput:\n%s", serveErr, output.String())
@@ -427,6 +436,48 @@ func TestServeCancelDuringProviderCall(t *testing.T) {
 	}
 	if attempt.ErrorCode != string(app.GenerationCancelled) {
 		t.Fatalf("attempt error code after cancellation: got %q want %q", attempt.ErrorCode, app.GenerationCancelled)
+	}
+	if attempt.InputTokens != nil || attempt.OutputTokens != nil {
+		t.Fatal("interrupted provider call incorrectly retained known usage")
+	}
+}
+
+func TestServeShutdownClosesIncompleteProbe(t *testing.T) {
+	store, _ := workerTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	addr := ephemeralAddr(t)
+	finished := make(chan error, 1)
+	joined := make(chan struct{})
+	go func() {
+		defer close(joined)
+		finished <- serve(ctx, store, &fakeProvider{}, addr, io.Discard)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-joined
+	})
+	waitForHTTP(t, addr)
+	connection, err := net.DialTimeout("tcp", addr, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if _, err := connection.Write([]byte("GET /healthz HTTP/1.1\r\nHost: localhost\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	select {
+	case err := <-finished:
+		// Depending on whether the connection was accepted before cancellation,
+		// it is either drained or forcibly closed with a safe configuration code.
+		if !errors.Is(err, worker.ExecutionStopped) && !errors.Is(err, worker.ExecutionConfiguration) {
+			t.Fatalf("unexpected shutdown result: %v", err)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("incomplete probe prevented bounded shutdown")
+	}
+	if err := store.Ready(context.Background()); err != nil {
+		t.Fatalf("serve did not preserve the caller-owned store: %v", err)
 	}
 }
 

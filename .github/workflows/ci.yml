@@ -131,3 +131,27 @@ jobs:
         run: |
           npm --prefix tools/diagrams test
           make diagrams-check
+      - name: Check Cloud Run deployment contracts
+        run: make cloudrun-check
+
+  container:
+    name: Release container
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Build and check release processes with disposable PostgreSQL
+        run: |
+          python3 -B -m unittest discover -s scripts -p test_container_runner.py
+          make container-check
+      - name: Preserve failure logs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: container-failure-logs
+          retention-days: 7
+          if-no-files-found: ignore
+          include-hidden-files: true
+          path: .dev/runs/container-check.*/container-check.log

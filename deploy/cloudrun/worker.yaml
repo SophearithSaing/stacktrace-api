@@ -1,0 +1,68 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: stacktrace-worker
+  namespace: PROJECT_NUMBER
+  labels:
+    cloud.googleapis.com/location: REGION
+  annotations:
+    run.googleapis.com/ingress: internal
+    run.googleapis.com/invoker-iam-disabled: "false"
+    run.googleapis.com/minScale: "1"
+    run.googleapis.com/maxScale: "1"
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/maxScale: "1"
+        # The queue loop needs CPU without incoming HTTP requests.
+        run.googleapis.com/cpu-throttling: "false"
+        run.googleapis.com/execution-environment: gen2
+    spec:
+      serviceAccountName: stacktrace-worker@PROJECT_ID.iam.gserviceaccount.com
+      containerConcurrency: 1
+      timeoutSeconds: 10
+      containers:
+        - image: REGION-docker.pkg.dev/PROJECT_ID/REPOSITORY/stacktrace@sha256:IMAGE_DIGEST
+          command: [/app/worker]
+          args: [serve]
+          ports:
+            - name: http1
+              containerPort: 8080
+          env:
+            - name: APP_ENV
+              value: production
+            # Neon pooled connection URL with TLS; same branch/database as the jobs.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: stacktrace-worker-database-url
+                  key: SECRET_VERSION
+            - name: TOGETHER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: stacktrace-together-api-key
+                  key: SECRET_VERSION
+          resources:
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          # Readiness includes provider degradation and full-cycle progress;
+          # it must not prevent startup or cause provider-outage restart loops.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            timeoutSeconds: 2
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            timeoutSeconds: 2
+            periodSeconds: 30
+            failureThreshold: 3
+  traffic:
+    - latestRevision: true
+      percent: 100

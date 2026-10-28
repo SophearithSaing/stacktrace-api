@@ -169,16 +169,56 @@ and session behavior. Runner changes also require `python3 scripts/test_runner.p
 Direct `go test ./...` skips database tests unless `TEST_DATABASE_URL` is set;
 use the managed commands for complete verification. No paid providers are called.
 
-GitHub Actions runs **Backend**, **Runner lifecycle**, and **Contracts** checks on
-pull requests, pushes to `main`, and manual dispatch. CI uses Go from `go.mod`,
-Docker PostgreSQL 18, Python 3.12, and Node 26 for contract tooling. It invokes the
+GitHub Actions runs **Backend**, **Runner lifecycle**, **Contracts**, and
+**Release container** checks on pull requests, pushes to `main`, and manual
+dispatch. CI uses Go from `go.mod`, Docker PostgreSQL 18, Python 3.12, and Node 26
+for contract tooling. It invokes the
 same verification commands above, plus OpenAPI/diagram tooling tests. No provider
 secrets or paid checks are used. Failed database jobs retain only allowlisted logs
 for seven days, never databases, keys, or JSON fixtures. Workflow:
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
+To check the release image and Cloud Run templates locally:
+
+```sh
+make container-check # requires Docker; isolated PostgreSQL, no paid inference
+make openapi-setup   # installs the locked YAML tooling, if not already present
+make cloudrun-check
+```
+
 Optional diagram syntax and route-index verification is available with
 `make diagrams-setup` then `make diagrams-check`; see [`diagrams/README.md`](diagrams/README.md).
+
+## Container release
+
+```sh
+docker build --platform linux/amd64 -t stacktrace-api:local .
+```
+
+The non-root image defaults to `/app/server` and also includes `/app/worker`,
+`/app/db`, and `/app/admin`; select another binary with `--entrypoint`.
+Application commands read process environment, never `.env` files. `PORT` binds
+HTTP listeners on all interfaces unless `HTTP_ADDR` or `WORKER_HTTP_ADDR` is set.
+Migrations and demo seeding remain explicit CLI operations, never startup actions.
+`make container-check` checks the packaged processes, migration/readiness, and
+SIGTERM shutdown using disposable Docker resources. It blocks worker internet
+egress and never seeds or calls Together. Failures retain logs at the printed path.
+
+Cloud Run examples: [`deploy/cloudrun/`](deploy/cloudrun/). Replace project,
+region, domain, image digest, and secret-version placeholders in
+private copies before use. API and worker are separate services; the worker needs
+always-allocated CPU and at least one instance. Migration/admin jobs are explicit,
+single-task and non-retried; admin defaults to read-only `status`. No deployment
+automation or cloud provisioning is included yet.
+
+Use your existing Neon PostgreSQL database: pooled TLS URLs for API/worker and
+direct TLS URLs for migration/admin jobs, supplied through Secret Manager.
+No Cloud SQL instance or connection integration is required. Use same-site HTTPS
+frontend/API domains.
+The current exact-schema readiness policy requires a maintenance window for
+schema-changing releases; old images are not automatically compatible with new
+migrations. Proxy-aware rate limiting, final IAM/networking, operational alerts,
+backup/restore and deployed acceptance checks remain rollout gates.
 
 ## Operator CLI
 

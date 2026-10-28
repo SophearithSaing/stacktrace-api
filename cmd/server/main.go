@@ -48,5 +48,6 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		MaxHeaderBytes:    16 << 10,
 	}
 	logger.Info("starting HTTP server", "address", cfg.HTTPAddr, "api_origin", cfg.APIPublicOrigin)
-	return serve(ctx, server, 10*time.Second, logger)
+	// Leave margin before Cloud Run's ten-second SIGKILL deadline.
+	return serve(ctx, server, 8*time.Second, logger)
 }

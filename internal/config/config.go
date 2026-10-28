@@ -74,29 +74,20 @@ func load(role Role, getenv func(string) string) (Config, error) {
 		if cfg.TogetherAPIKey == "" {
 			return Config{}, errors.New("TOGETHER_API_KEY is required for worker serve")
 		}
-		cfg.HTTPAddr = getenv("WORKER_HTTP_ADDR")
-		if cfg.HTTPAddr == "" {
-			cfg.HTTPAddr = "127.0.0.1:8081"
-		}
-		_, port, err := net.SplitHostPort(cfg.HTTPAddr)
-		portNumber, portErr := strconv.Atoi(port)
-		if err != nil || portErr != nil || portNumber < 1 || portNumber > 65535 {
-			return Config{}, errors.New("WORKER_HTTP_ADDR must be a host:port address with a port from 1 to 65535")
+		cfg.HTTPAddr, err = listenerAddress(getenv, "WORKER_HTTP_ADDR", "127.0.0.1:8081")
+		if err != nil {
+			return Config{}, err
 		}
 		return cfg, nil
 	}
 
-	cfg.HTTPAddr = getenv("HTTP_ADDR")
-	if cfg.HTTPAddr == "" {
-		cfg.HTTPAddr = ":8080"
-		if cfg.Environment == "development" {
-			cfg.HTTPAddr = "127.0.0.1:8080"
-		}
+	defaultAddress := ":8080"
+	if cfg.Environment == "development" {
+		defaultAddress = "127.0.0.1:8080"
 	}
-	_, port, err := net.SplitHostPort(cfg.HTTPAddr)
-	portNumber, portErr := strconv.Atoi(port)
-	if err != nil || portErr != nil || portNumber < 1 || portNumber > 65535 {
-		return Config{}, errors.New("HTTP_ADDR must be a host:port address with a port from 1 to 65535")
+	cfg.HTTPAddr, err = listenerAddress(getenv, "HTTP_ADDR", defaultAddress)
+	if err != nil {
+		return Config{}, err
 	}
 	cfg.APIPublicOrigin = getenv("API_PUBLIC_ORIGIN")
 	if !validOrigin(cfg.APIPublicOrigin, cfg.Environment) {
@@ -126,6 +117,28 @@ func load(role Role, getenv func(string) string) (Config, error) {
 	// with explicit development mode. HTTPS always uses the production cookie.
 	cfg.SecureCookies = strings.HasPrefix(cfg.APIPublicOrigin, "https://")
 	return cfg, nil
+}
+
+// listenerAddress validates an explicit listener or uses the platform PORT before
+// the local default. Explicit addresses keep managed local runs isolated.
+func listenerAddress(getenv func(string) string, name, defaultAddress string) (string, error) {
+	address := getenv(name)
+	if address == "" {
+		address = defaultAddress
+		if port := getenv("PORT"); port != "" {
+			portNumber, err := strconv.Atoi(port)
+			if err != nil || portNumber < 1 || portNumber > 65535 || strings.Trim(port, "0123456789") != "" {
+				return "", errors.New("PORT must be a number from 1 to 65535")
+			}
+			address = net.JoinHostPort("", port)
+		}
+	}
+	_, port, err := net.SplitHostPort(address)
+	portNumber, portErr := strconv.Atoi(port)
+	if err != nil || portErr != nil || portNumber < 1 || portNumber > 65535 {
+		return "", errors.New(name + " must be a host:port address with a port from 1 to 65535")
+	}
+	return address, nil
 }
 
 // validOrigin reports whether a client origin is safe for the deployment environment.

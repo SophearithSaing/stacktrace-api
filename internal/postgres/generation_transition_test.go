@@ -165,7 +165,7 @@ func TestGenerationCompletionAcknowledgedPriorAllowsAdmission(t *testing.T) {
 }
 
 func TestGenerationCompletionRetryCapsAndExpiry(t *testing.T) {
-	for _, name := range []string{"third_attempt", "second_invalid", "hint_at_expiry", "expired_job", "expired_lease", "bad_jitter"} {
+	for _, name := range []string{"third_attempt", "second_invalid", "hint_at_expiry", "expired_job", "expired_lease", "before_settlement", "bad_jitter"} {
 		t.Run(name, func(t *testing.T) {
 			store, job, _ := spendFixture(t, 500000)
 			count := 1
@@ -192,7 +192,9 @@ func TestGenerationCompletionRetryCapsAndExpiry(t *testing.T) {
 			}
 			generationSQL(t, store, `UPDATE generation_jobs SET lease_version=$2 WHERE id=$1`, job.ID, count)
 			job = claimJob(t, store, job.ID)
-			now := app.GenerationInstant(time.Now())
+			// Settlement uses database time. A host-clock override can precede
+			// that observation when Docker's VM clock is ahead of the test host.
+			now := *storedSpend(t, store, id).FinishedAt
 			jitter := time.Duration(0)
 			want := app.JobFailed
 			if name == "expired_job" {
@@ -202,11 +204,17 @@ func TestGenerationCompletionRetryCapsAndExpiry(t *testing.T) {
 			if name == "expired_lease" {
 				now = *job.LeaseExpiresAt
 			}
+			if name == "before_settlement" {
+				now = now.Add(-time.Microsecond)
+			}
 			if name == "bad_jitter" {
 				jitter = time.Second + 1
 			}
 			got, err := store.completeGeneration(context.Background(), job.ID, job.LeaseVersion, id, jitter, &now)
-			if name == "expired_lease" || name == "bad_jitter" {
+			if name == "before_settlement" && !errors.Is(err, app.ErrConflict) {
+				t.Fatalf("completion before the durable observation must conflict: %v", err)
+			}
+			if name == "expired_lease" || name == "before_settlement" || name == "bad_jitter" {
 				if err == nil || got != "" || !sameClaimJob(job, claimJob(t, store, job.ID)) {
 					t.Fatal(got, err)
 				}
